@@ -175,7 +175,7 @@ body.dark .tile, body.dark .card { background: var(--head); }
 
 
 /* ── book / pages ── */
-#book { position: relative; margin: auto; flex: none; display: flex; perspective: 2600px; }
+#book { position: relative; margin: auto; flex: none; display: flex; }
 .pg { position: relative; flex: none; background: var(--paper); box-shadow: 0 6px 28px rgba(0,0,0,.28); touch-action: none; }
 .pg canvas { position: absolute; left: 0; top: 0; touch-action: none; }
 .pg .live { pointer-events: none; }

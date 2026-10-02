@@ -154,7 +154,7 @@ function layout() {
   pgR.el.hidden = n === 1;
   scroller.style.overflow = S.zoom > 1 ? 'auto' : 'hidden';
   const scale = Math.max(Math.min(aw / (n * PW), ah / PH), 0.05) * S.zoom;
-  const w = Math.round(PW * scale), h = Math.round(PH * scale), dpr = window.devicePixelRatio || 1;
+  const w = Math.round(PW * scale), h = Math.round(PH * scale), dpr = Math.min(window.devicePixelRatio || 1, 2);
   for (const pg of [pgL, pgR]) {
     pg.el.style.width = w + 'px';
     pg.el.style.height = h + 'px';
@@ -305,18 +305,16 @@ function drawDot(c, s) {
   c.fill();
   c.restore();
 }
-function drawSeg(c, s, i) {
-  const p = s.p, n = p.length;
-  let a, ctrl = null, b;
-  if (i === 0) { a = p[0]; b = mid(p[0], p[1]); }
-  else if (i === n - 1) { a = mid(p[n - 2], p[n - 1]); b = p[n - 1]; }
-  else { a = mid(p[i - 1], p[i]); ctrl = p[i]; b = mid(p[i], p[i + 1]); }
+// segment i runs from p[i] to p[i+1]; neighbours shape the curve so it passes through every sample
+function drawSeg(c, s, i, pts) {
+  const p = pts || s.p, n = p.length;
+  const p0 = p[Math.max(i - 1, 0)], p1 = p[i], p2 = p[i + 1], p3 = p[Math.min(i + 2, n - 1)];
   c.strokeStyle = inkColor(s.c);
   c.lineCap = c.lineJoin = 'round';
-  c.lineWidth = s.w * (.45 + 1.1 * p[i][2]);
+  c.lineWidth = s.w * (.45 + 1.1 * (p1[2] + p2[2]) / 2);
   c.beginPath();
-  c.moveTo(a[0], a[1]);
-  if (ctrl) c.quadraticCurveTo(ctrl[0], ctrl[1], b[0], b[1]); else c.lineTo(b[0], b[1]);
+  c.moveTo(p1[0], p1[1]);
+  c.bezierCurveTo(p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6, p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6, p2[0], p2[1]);
   c.stroke();
 }
 function drawHighlight(c, s) {
@@ -335,7 +333,7 @@ function drawHighlight(c, s) {
 function drawStroke(c, s) {
   if (s.t === 'h') return drawHighlight(c, s);
   if (s.p.length === 1) return drawDot(c, s);
-  for (let i = 0; i < s.p.length; i++) drawSeg(c, s, i);
+  for (let i = 0; i < s.p.length - 1; i++) drawSeg(c, s, i);
 }
 function redrawInk(pg) {
   pg.inkRaf = 0;
@@ -508,14 +506,22 @@ function onMove(e) {
   if (cur.type === 'draw') {
     const s = cur.s, pg = cur.pg, hl = s.t === 'h';
     const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+    const r = pg.el.getBoundingClientRect(), kx = PW / r.width, ky = PH / r.height;
     for (const ev of (evs.length ? evs : [e])) {
-      const pt = toPage(ev, pg), last = s.p[s.p.length - 1];
-      if (Math.hypot(pt[0] - last[0], pt[1] - last[1]) < .6) continue;
-      cur.pr = cur.pr * .6 + pressureOf(ev) * .4;
-      s.p.push([pt[0], pt[1], cur.pr]);
-      if (!hl) { const n = s.p.length; drawSeg(pg.inkx, s, n === 2 ? 0 : n - 2); }
+      const x = (ev.clientX - r.left) * kx, y = (ev.clientY - r.top) * ky, last = s.p[s.p.length - 1];
+      if (Math.hypot(x - last[0], y - last[1]) < .5) continue;
+      cur.pr = cur.pr * .5 + pressureOf(ev) * .5;
+      s.p.push([x, y, cur.pr]);
+      if (!hl && s.p.length >= 3) drawSeg(pg.inkx, s, s.p.length - 3);   // settled: its curve is now final
     }
-    if (hl) { pg.livex.clearRect(0, 0, PW, PH); drawHighlight(pg.livex, s); }
+    pg.livex.clearRect(0, 0, PW, PH);
+    if (hl) drawHighlight(pg.livex, s);
+    else if (s.p.length >= 2) {
+      // tail: the unsettled last segment plus a few predicted points, so ink reaches the pen tip with no lag
+      const n = s.p.length, base = Math.max(0, n - 3), t = s.p.slice(base), pr = cur.pr;
+      for (const ev of (e.getPredictedEvents ? e.getPredictedEvents().slice(0, 3) : [])) t.push([(ev.clientX - r.left) * kx, (ev.clientY - r.top) * ky, pr]);
+      for (let i = n - 2 - base; i < t.length - 1; i++) drawSeg(pg.livex, s, i, t);
+    }
   } else if (cur.type === 'erase') {
     const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
     for (const ev of (evs.length ? evs : [e])) eraseAt(toPage(ev, cur.pg));
@@ -551,9 +557,10 @@ function onUp(e) {
   } else if (c.type === 'draw') {
     const s = c.s, n = s.p.length, pg = c.pg;
     if (cancelled && n < 2) return;
-    if (s.t === 'h') { drawHighlight(pg.inkx, s); pg.livex.clearRect(0, 0, PW, PH); }
+    pg.livex.clearRect(0, 0, PW, PH);
+    if (s.t === 'h') drawHighlight(pg.inkx, s);
     else if (n === 1) drawDot(pg.inkx, s);
-    else drawSeg(pg.inkx, s, n - 1);
+    else drawSeg(pg.inkx, s, n - 2);
     s.p = s.p.map(p => [Math.round(p[0] * 10) / 10, Math.round(p[1] * 10) / 10, Math.round(p[2] * 100) / 100]);
     pg.strokes.push(s);
     push({ k: 'stroke', pg, s });
@@ -830,6 +837,7 @@ async function flip(dir) {
       leaf.appendChild(f);
     };
     face('front', front); face('back', back);
+    book.style.perspective = '2600px';
     book.appendChild(leaf);
     const turn = n === 2
       ? [{ transform: 'rotateY(0deg)' }, { transform: 'rotateY(-180deg)' }]
@@ -840,7 +848,7 @@ async function flip(dir) {
     S.undo = []; S.redo = []; syncHistoryBtns();
     renderTitle();
     leaf.remove();
-  } finally { flipping = false; }
+  } finally { flipping = false; book.style.perspective = ''; }
 }
 
 function renderTitle() {
@@ -1204,7 +1212,7 @@ function toast(msg) {
 let dbgOn = false;
 function dbgUpdate(e) {
   if (!dbgOn) return;
-  $('dbg').textContent = `${e.type} ${e.pointerType} #${e.pointerId} ${Math.round(e.width || 0)}x${Math.round(e.height || 0)}px p=${(e.pressure || 0).toFixed(2)}\n` +
+  $('dbg').textContent = `${e.type} ${e.pointerType} #${e.pointerId} ${Math.round(e.width || 0)}x${Math.round(e.height || 0)}px p=${(e.pressure || 0).toFixed(2)} samples/event=${e.getCoalescedEvents ? e.getCoalescedEvents().length : 'n/a'}\n` +
     `recentPen=${recentPen()} penSeen=${penSeen} pinch=${!!pinch} touches=${touches.size} cur=${cur ? cur.type : '-'} zoom=${S.zoom.toFixed(2)}`;
 }
 for (const t of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) document.addEventListener(t, dbgUpdate, true);
