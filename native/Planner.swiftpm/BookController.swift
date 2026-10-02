@@ -157,6 +157,10 @@ final class BookController: UIViewController, UIPageViewControllerDataSource, UI
             let forward = w >= model.weekStart
             p.setViewControllers(controllers(for: w), direction: forward ? .forward : .reverse, animated: model.screen == .planner)
             model.weekStart = w
+        case .show(let date):                     // jump without a page-turn (e.g. from Month view)
+            let w = Week.start(of: date)
+            p.setViewControllers(controllers(for: w), direction: .forward, animated: false)
+            model.weekStart = w
         case .undo:
             view.window?.undoManager?.undo()
         case .redo:

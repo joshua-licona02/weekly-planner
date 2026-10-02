@@ -6,6 +6,7 @@ struct MonthView: View {
     @State private var picking = false
     @State private var pickMonth = 1
     @State private var pickYear = 2026
+    @State private var selectedDay: DayPick?
 
     private func shift(_ n: Int) {
         model.monthAnchor = Week.calendar.date(byAdding: .month, value: n, to: Week.monthStart(model.monthAnchor)) ?? model.monthAnchor
@@ -33,6 +34,15 @@ struct MonthView: View {
             Spacer()
             Button("This month") { model.monthAnchor = Date() }
                 .buttonStyle(.bordered)
+            Button {
+                let cal = Week.calendar
+                let today = cal.startOfDay(for: Date())
+                let inThisMonth = cal.isDate(today, equalTo: model.monthAnchor, toGranularity: .month)
+                model.beginNew(date: inThisMonth ? today : Week.monthStart(model.monthAnchor))
+            } label: {
+                Label("Add event", systemImage: "plus")
+            }
+            .buttonStyle(.borderedProminent)
         }
         .tint(Color(model.theme.accent))
         .padding(.horizontal, 14)
@@ -87,6 +97,24 @@ struct MonthView: View {
                 }
         )
         .sheet(isPresented: $picking) { monthPicker }
+        .sheet(item: $selectedDay) { pick in
+            DayCard(date: pick.date) { action in
+                selectedDay = nil
+                // let this card close before the next one opens
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                    switch action {
+                    case .add: model.beginNew(date: pick.date)
+                    case .edit(let e): model.beginEdit(e)
+                    case .openWeek:
+                        model.commands.send(.show(pick.date))
+                        model.screen = .planner
+                    case .close:
+                        break
+                    }
+                }
+            }
+            .environmentObject(model)
+        }
     }
 
     @ViewBuilder private var grid: some View {
@@ -109,7 +137,8 @@ struct MonthView: View {
             }
             .background(Color(t.header))
             ForEach(0..<weeks, id: \.self) { w in
-                MonthWeekRow(weekStart: Week.adding(w, to: gridStart), month: month, maxLanes: weeks > 5 ? 3 : 4)
+                MonthWeekRow(weekStart: Week.adding(w, to: gridStart), month: month, maxLanes: weeks > 5 ? 3 : 4,
+                             onDay: { selectedDay = DayPick(date: $0) })
             }
         }
         .foregroundStyle(Color(t.ink))
@@ -137,6 +166,7 @@ private struct MonthWeekRow: View {
     let weekStart: Date
     let month: Int
     let maxLanes: Int
+    let onDay: (Date) -> Void
 
     var body: some View {
         let lay = layout()
@@ -154,7 +184,7 @@ private struct MonthWeekRow: View {
                     bar(s)
                         .frame(width: max(colW * CGFloat(s.end - s.start + 1) - 8, 10), height: 20)
                         .offset(x: colW * CGFloat(s.start) + 4, y: 34 + CGFloat(s.lane) * 23)
-                        .allowsHitTesting(false)
+                        .onTapGesture { model.beginEdit(s.event) }
                 }
             }
         }
@@ -184,10 +214,7 @@ private struct MonthWeekRow: View {
         .background(inMonth ? Color.clear : Color.gray.opacity(0.08))
         .overlay(alignment: .trailing) { Rectangle().fill(Color(t.line)).frame(width: 1) }
         .contentShape(Rectangle())
-        .onTapGesture {
-            model.commands.send(.go(date))
-            model.screen = .planner
-        }
+        .onTapGesture { onDay(date) }
     }
 
     private func bar(_ s: MonthSeg) -> some View {
@@ -226,5 +253,79 @@ private struct MonthWeekRow: View {
             out.segs.append(MonthSeg(id: e.id, start: si, end: ei, lane: lane, event: e))
         }
         return out
+    }
+}
+
+struct DayPick: Identifiable {
+    let date: Date
+    var id: String { Week.key(date) }
+}
+
+/// Tapping a day in Month view: its events, add one, or open that week's pages.
+struct DayCard: View {
+    enum Action { case add, edit(PlannerEvent), openWeek, close }
+
+    @EnvironmentObject var model: PlannerModel
+    let date: Date
+    let onAction: (Action) -> Void
+
+    var body: some View {
+        let dayEvents = expandEvents(model.events, from: date, to: date)
+            .sorted { ($0.startMin ?? -1, $0.title) < ($1.startMin ?? -1, $1.title) }
+        NavigationStack {
+            List {
+                Section {
+                    if dayEvents.isEmpty {
+                        Text("Nothing planned yet.").foregroundStyle(.secondary)
+                    }
+                    ForEach(dayEvents) { e in
+                        Button { onAction(.edit(e)) } label: {
+                            HStack(spacing: 10) {
+                                RoundedRectangle(cornerRadius: 3)
+                                    .fill(Color(model.color(for: e.cat)))
+                                    .frame(width: 6, height: 28)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(e.title.isEmpty ? model.name(for: e.cat) : e.title)
+                                        .foregroundStyle(Color.primary)
+                                    Text(details(e)).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if e.repeats { Image(systemName: "repeat").foregroundStyle(.secondary) }
+                            }
+                        }
+                    }
+                }
+                Section {
+                    Button { onAction(.add) } label: {
+                        Label("Add event", systemImage: "plus.circle.fill")
+                    }
+                    Button { onAction(.openWeek) } label: {
+                        Label("Open this week in the planner", systemImage: "book")
+                    }
+                }
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { onAction(.close) }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private var title: String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "EEEE, MMMM d"
+        return f.string(from: date)
+    }
+
+    private func details(_ e: PlannerEvent) -> String {
+        var parts = [model.name(for: e.cat)]
+        if let t = e.timeLabel { parts.append(t) } else { parts.append("All day") }
+        if e.days > 1 { parts.append("\(e.days) days") }
+        return parts.joined(separator: " · ")
     }
 }

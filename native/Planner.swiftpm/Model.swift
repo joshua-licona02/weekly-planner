@@ -98,7 +98,7 @@ enum Screen: String, CaseIterable, Identifiable {
 enum InputMode { case write, events }
 
 enum BookCommand {
-    case next, previous, go(Date), undo, redo, reload
+    case next, previous, go(Date), show(Date), undo, redo, reload
 }
 
 struct EventDraft: Identifiable {
@@ -191,12 +191,19 @@ final class PlannerModel: ObservableObject {
         draft = EventDraft(event: PlannerEvent(date: Week.key(date), line: line, cat: currentCat), isNew: true)
     }
 
+    /// New event on a day, placed on the first writing line not already used by another event.
+    func beginNew(date: Date) {
+        let taken = expandEvents(events, from: date, to: date).flatMap { Array($0.line..<($0.line + $0.lines)) }
+        let line = (0..<Page.lines).first { !taken.contains($0) } ?? 0
+        beginNew(date: date, line: line)
+    }
+
     /// "+" button: a typed event on today (if it's on screen) or the first visible day.
     func beginNewTyped() {
         let today = Week.calendar.startOfDay(for: Date())
         let visibleEnd = Week.day(pagesShown * 7 - 1, of: weekStart)
         let day = (today >= weekStart && today <= visibleEnd) ? today : weekStart
-        beginNew(date: day, line: 0)
+        beginNew(date: day)
     }
 
     /// Tapping any occurrence of a repeating event edits the whole series.
