@@ -608,6 +608,36 @@ window.addEventListener('pointerdown', e => {
   if (e.pointerType === 'pen') dbgPush(`down #${e.pointerId} on ${e.target.tagName}${e.target.id ? '#' + e.target.id : ''} -> ${cur && cur.pid === e.pointerId ? cur.type : 'NO STROKE STARTED'}`);
 }, true);
 window.addEventListener('pointermove', onMove, true);
+
+// Pencil hover preview (iPads with Pencil hover): shows where the tip will land and its size/colour.
+let hoverPg = null, hoverTimer = 0;
+function clearHover() {
+  if (hoverPg && !(cur && cur.pg === hoverPg)) hoverPg.livex.clearRect(0, 0, PW, PH);
+  hoverPg = null;
+}
+window.addEventListener('pointermove', e => {
+  if (e.pointerType !== 'pen' || e.buttons !== 0 || cur || S.view !== 'planner') return;
+  const pg = pageAt(e.clientX, e.clientY);
+  if (hoverPg && hoverPg !== pg) clearHover();
+  if (!pg || S.tool === 'event') return;
+  hoverPg = pg;
+  const r = pg.el.getBoundingClientRect(), x = (e.clientX - r.left) / r.width * PW, y = (e.clientY - r.top) / r.height * PH;
+  const c = pg.livex;
+  c.clearRect(0, 0, PW, PH);
+  c.save();
+  c.beginPath();
+  if (S.tool === 'eraser') {
+    c.arc(x, y, 14, 0, Math.PI * 2); c.lineWidth = 1.5; c.strokeStyle = theme().muted; c.stroke();
+  } else {
+    const hl = S.tool === 'hl';
+    c.arc(x, y, Math.max(2.5, (hl ? HL_W[S.size.hl] : PEN_W[S.size.pen]) / 2), 0, Math.PI * 2);
+    c.globalAlpha = hl ? 0.45 : 0.55; c.fillStyle = hl ? S.hcolor : inkColor(S.color); c.fill();
+  }
+  c.restore();
+  clearTimeout(hoverTimer);
+  hoverTimer = setTimeout(clearHover, 500);
+}, true);
+window.addEventListener('pointerdown', e => { if (e.pointerType === 'pen') { clearTimeout(hoverTimer); clearHover(); } }, true);
 window.addEventListener('pointerup', e => {
   const c = cur; onUp(e);
   if (e.pointerType === 'pen') dbgPush(`up   #${e.pointerId} -> ` + (c && c.pid === e.pointerId ? (c.s ? 'saved (' + c.s.p.length + ' pts)' : c.type) : 'late up, stroke already saved'));
