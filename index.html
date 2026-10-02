@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Planner">
+  <meta name="theme-color" content="#2b3a4a">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <title>Weekly Planner</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="nav-group">
+      <button id="prevBtn" aria-label="Previous">&#8249;</button>
+      <button id="todayBtn">Today</button>
+      <button id="nextBtn" aria-label="Next">&#8250;</button>
+      <label class="jump" title="Jump to date">&#128197;<input id="jumpDate" type="date"></label>
+    </div>
+    <div class="title">
+      <div id="titleMain"></div>
+      <div id="titleSub"></div>
+    </div>
+    <nav class="tabs">
+      <button data-view="planner" class="on">Planner</button>
+      <button data-view="month">Month</button>
+      <button data-view="stats">Stats</button>
+      <button id="settingsBtn" aria-label="Settings">&#9881;</button>
+    </nav>
+  </header>
+
+  <section id="plannerView">
+    <div class="toolbar">
+      <div class="tools" id="tools">
+        <button data-tool="pen" class="on">&#9998; Pen</button>
+        <button data-tool="hl">&#9646; Highlighter</button>
+        <button data-tool="eraser">&#9003; Eraser</button>
+        <button data-tool="event">&#9638; Events</button>
+      </div>
+      <div class="ctx" id="ctx"></div>
+      <div class="tools right">
+        <button id="undoBtn" aria-label="Undo">&#8630;</button>
+        <button id="redoBtn" aria-label="Redo">&#8631;</button>
+        <button id="zoomBtn">1&times;</button>
+      </div>
+    </div>
+    <div id="scroller">
+      <div id="book">
+        <div class="pg" id="pgL"><canvas></canvas><canvas></canvas><canvas class="live"></canvas></div>
+        <div class="pg" id="pgR" hidden><canvas></canvas><canvas></canvas><canvas class="live"></canvas></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="monthView" hidden></section>
+  <section id="statsView" hidden></section>
+</div>
+
+<aside id="settings" class="drawer" hidden></aside>
+<div id="pop" class="pop" hidden></div>
+<div id="toast" class="toast" hidden></div>
+<input id="importFile" type="file" accept=".json,application/json" hidden>
+
+<script src="app.js"></script>
+</body>
+</html>
