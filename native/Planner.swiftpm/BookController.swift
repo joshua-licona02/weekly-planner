@@ -10,6 +10,7 @@ final class BookController: UIViewController, UIPageViewControllerDataSource, UI
     private let toolPicker = PKToolPicker()
     private var pageVC: UIPageViewController?
     private var spread = false
+    private var zoomed = false
     private var bag = Set<AnyCancellable>()
 
     init(model: PlannerModel) {
@@ -25,18 +26,40 @@ final class BookController: UIViewController, UIPageViewControllerDataSource, UI
 
         model.commands
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] in self?.handle($0) }
+            .sink { [weak self] command in self?.handle(command) }
             .store(in: &bag)
         model.$themeID
             .dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.applyTheme() }
             .store(in: &bag)
-        model.$showTools
+        model.$events
+            .combineLatest(model.$categories)
             .dropFirst()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] visible in self?.pages.forEach { $0.setToolsVisible(visible) } }
+            .sink { [weak self] _ in self?.pages.forEach { $0.refreshEvents() } }
             .store(in: &bag)
+        model.$mode
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] mode in
+                guard let self = self else { return }
+                self.pages.forEach { $0.setMode(mode) }
+                self.updatePageTurns()
+            }
+            .store(in: &bag)
+        Publishers.CombineLatest3(model.$screen, model.$mode, model.$showTools)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] screen, mode, show in
+                let visible = screen == .planner && mode == .write && show
+                self?.pages.forEach { $0.setToolsVisible(visible) }
+            }
+            .store(in: &bag)
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        model.undoManager = view.window?.undoManager
     }
 
     override func viewDidLayoutSubviews() {
@@ -51,9 +74,17 @@ final class BookController: UIViewController, UIPageViewControllerDataSource, UI
         (pageVC?.viewControllers ?? []).compactMap { $0 as? WeekPageController }
     }
 
+    private var toolsShouldShow: Bool {
+        model.screen == .planner && model.mode == .write && model.showTools
+    }
+
     private func makePage(_ week: Date) -> WeekPageController {
-        let p = WeekPageController(week: week, theme: model.theme, toolPicker: toolPicker, showTools: model.showTools)
-        p.onZoomChanged = { [weak self] zoomed in self?.setPageTurnsEnabled(!zoomed) }
+        let p = WeekPageController(week: week, model: model, toolPicker: toolPicker)
+        p.setToolsVisible(toolsShouldShow)
+        p.onZoomChanged = { [weak self] z in
+            self?.zoomed = z
+            self?.updatePageTurns()
+        }
         return p
     }
 
@@ -62,13 +93,14 @@ final class BookController: UIViewController, UIPageViewControllerDataSource, UI
     }
 
     private func build(spread newSpread: Bool) {
-        pages.forEach { $0.saveNow() }
+        NotificationCenter.default.post(name: .plannerSaveAll, object: nil)
         if let old = pageVC {
             old.willMove(toParent: nil)
             old.view.removeFromSuperview()
             old.removeFromParent()
         }
         spread = newSpread
+        zoomed = false
         let spine: UIPageViewController.SpineLocation = newSpread ? .mid : .min
         let p = UIPageViewController(transitionStyle: .pageCurl,
                                      navigationOrientation: .horizontal,
@@ -84,30 +116,25 @@ final class BookController: UIViewController, UIPageViewControllerDataSource, UI
         p.didMove(toParent: self)
         pageVC = p
         p.setViewControllers(controllers(for: model.weekStart), direction: .forward, animated: false)
-        configurePageGestures()
+        updatePageTurns()
         let shown = newSpread ? 2 : 1
         DispatchQueue.main.async { [weak self] in self?.model.pagesShown = shown }
     }
 
-    /// Page-curl responds to fingers only (never the Pencil), and the tap-in-the-margin flip is off.
-    private func configurePageGestures() {
+    /// Page-curl responds to fingers only (never the Pencil); off while zoomed or in Events mode.
+    private func updatePageTurns() {
+        let enabled = !zoomed && model.mode == .write
         for g in pageVC?.gestureRecognizers ?? [] {
             if g is UITapGestureRecognizer {
-                g.isEnabled = false
+                g.isEnabled = false             // no accidental flips from tapping the margin
             } else {
                 g.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+                g.isEnabled = enabled
             }
         }
     }
 
-    private func setPageTurnsEnabled(_ enabled: Bool) {
-        for g in pageVC?.gestureRecognizers ?? [] where !(g is UITapGestureRecognizer) {
-            g.isEnabled = enabled
-        }
-    }
-
     private func applyTheme() {
-        view.backgroundColor = .clear
         pages.forEach { $0.applyTheme(model.theme) }
     }
 
@@ -128,14 +155,16 @@ final class BookController: UIViewController, UIPageViewControllerDataSource, UI
         case .go(let date):
             let w = Week.start(of: date)
             let forward = w >= model.weekStart
-            p.setViewControllers(controllers(for: w), direction: forward ? .forward : .reverse, animated: true)
+            p.setViewControllers(controllers(for: w), direction: forward ? .forward : .reverse, animated: model.screen == .planner)
             model.weekStart = w
         case .undo:
             view.window?.undoManager?.undo()
         case .redo:
             view.window?.undoManager?.redo()
+        case .reload:
+            build(spread: spread)
         }
-        configurePageGestures()
+        updatePageTurns()
     }
 
     // MARK: data source / delegate
