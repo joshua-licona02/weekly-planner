@@ -457,8 +457,7 @@ function hitEvent(pg, pt) {
   return null;
 }
 
-function onDown(e) {
-  const pg = pageOfEl(e.currentTarget);
+function onDown(e, pg) {
   if (flipping) return;
   if (e.pointerType !== 'touch') {
     // Pen / mouse always wins. Fast writing can deliver the next pen-down before the previous
@@ -571,6 +570,8 @@ function onUp(e) {
     pg.strokes.push(s);
     push({ k: 'stroke', pg, s });
     dbgC.kept++;
+    clearTimeout(pg.heal);
+    pg.heal = setTimeout(() => { if (!(cur && cur.type === 'draw')) redrawInk(pg); }, 350);
     pageDirty(pg);
     if (layoutPending) { layoutPending = false; layout(); }
   } else if (c.type === 'erase') {
@@ -591,13 +592,31 @@ function onUp(e) {
     }
   }
 }
-for (const pg of [pgL, pgR]) {
-  pg.el.addEventListener('pointerdown', onDown);
-  pg.el.addEventListener('pointermove', onMove);
-  pg.el.addEventListener('pointerup', onUp);
-  pg.el.addEventListener('pointercancel', onUp);
-  pg.el.addEventListener('contextmenu', e => e.preventDefault());
+const UI_SELECTOR = '#bar, #menu, #optPanel, #pop, #settings, #showBar, #dbg, #toast';
+function pageAt(x, y) {
+  for (const pg of visiblePages()) {
+    const r = pg.el.getBoundingClientRect();
+    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return pg;
+  }
+  return null;
 }
+window.addEventListener('pointerdown', e => {
+  if (S.view !== 'planner' || (e.target.closest && e.target.closest(UI_SELECTOR))) return;
+  const pg = pageAt(e.clientX, e.clientY);
+  if (!pg) return;
+  onDown(e, pg);
+  if (e.pointerType === 'pen') dbgPush(`down #${e.pointerId} on ${e.target.tagName}${e.target.id ? '#' + e.target.id : ''} -> ${cur && cur.pid === e.pointerId ? cur.type : 'NO STROKE STARTED'}`);
+}, true);
+window.addEventListener('pointermove', onMove, true);
+window.addEventListener('pointerup', e => {
+  const c = cur; onUp(e);
+  if (e.pointerType === 'pen') dbgPush(`up   #${e.pointerId} -> ` + (c && c.pid === e.pointerId ? (c.s ? 'saved (' + c.s.p.length + ' pts)' : c.type) : 'late up, stroke already saved'));
+}, true);
+window.addEventListener('pointercancel', e => {
+  const c = cur; onUp(e);
+  if (e.pointerType === 'pen') dbgPush(`CANCEL #${e.pointerId} by iPad -> ` + (c && c.pid === e.pointerId ? 'saved' : 'no stroke'));
+}, true);
+for (const pg of [pgL, pgR]) pg.el.addEventListener('contextmenu', e => e.preventDefault());
 
 /* ───────────── Event card (typed events + editing) ───────────── */
 function closePop() { $('pop').hidden = true; }
@@ -1226,13 +1245,25 @@ function toast(msg) {
 }
 
 /* ───────────── Touch diagnostics (Settings) ───────────── */
-let dbgOn = false;
-function dbgUpdate(e) {
-  if (!dbgOn) return;
-  $('dbg').textContent = `${e.type} ${e.pointerType} #${e.pointerId} ${Math.round(e.width || 0)}x${Math.round(e.height || 0)}px p=${(e.pressure || 0).toFixed(2)} samples/event=${e.getCoalescedEvents ? e.getCoalescedEvents().length : 'n/a'}\n` +
-    `recentPen=${recentPen()} penSeen=${penSeen} pinch=${!!pinch} touches=${touches.size} cur=${cur ? cur.type : '-'} zoom=${S.zoom.toFixed(2)}\npen: down=${dbgC.down} up=${dbgC.up} cancel=${dbgC.cancel} strokesKept=${dbgC.kept}`;
+let dbgOn = false, dbgRaf = 0, dbgLast = null;
+const dbgLog = [];
+function dbgRender() {
+  dbgRaf = 0;
+  const e = dbgLast;
+  $('dbg').textContent =
+    (e ? `${e.type} ${e.pointerType} #${e.pointerId} ${Math.round(e.width || 0)}x${Math.round(e.height || 0)}px p=${(e.pressure || 0).toFixed(2)}\n` : '') +
+    `pen: down=${dbgC.down} up=${dbgC.up} cancel=${dbgC.cancel} saved=${dbgC.kept}   cur=${cur ? cur.type : '-'} pinch=${!!pinch} zoom=${S.zoom.toFixed(2)}\n` +
+    dbgLog.join('\n');
 }
-for (const t of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) document.addEventListener(t, dbgUpdate, true);
+function dbgPush(line) {
+  if (!dbgOn) return;
+  dbgLog.push(line);
+  if (dbgLog.length > 9) dbgLog.shift();
+  if (!dbgRaf) dbgRaf = requestAnimationFrame(dbgRender);
+}
+for (const t of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) {
+  document.addEventListener(t, e => { if (dbgOn) { dbgLast = e; if (!dbgRaf) dbgRaf = requestAnimationFrame(dbgRender); } }, true);
+}
 
 /* ───────────── Boot ───────────── */
 async function boot() {
