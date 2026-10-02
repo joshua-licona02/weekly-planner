@@ -3,8 +3,93 @@ import SwiftUI
 /// Full month calendar. Multi-day events show as one bar across their days.
 struct MonthView: View {
     @EnvironmentObject var model: PlannerModel
+    @State private var picking = false
+    @State private var pickMonth = 1
+    @State private var pickYear = 2026
+
+    private func shift(_ n: Int) {
+        model.monthAnchor = Week.calendar.date(byAdding: .month, value: n, to: Week.monthStart(model.monthAnchor)) ?? model.monthAnchor
+    }
+
+    private var header: some View {
+        HStack(spacing: 14) {
+            Button { withAnimation { shift(-1) } } label: {
+                Image(systemName: "chevron.left.circle.fill").font(.title)
+            }
+            Button {
+                let cal = Week.calendar
+                pickMonth = cal.component(.month, from: model.monthAnchor)
+                pickYear = cal.component(.year, from: model.monthAnchor)
+                picking = true
+            } label: {
+                HStack(spacing: 6) {
+                    Text(Week.monthYear(model.monthAnchor)).font(.title2.bold())
+                    Image(systemName: "chevron.down").font(.callout.weight(.bold))
+                }
+            }
+            Button { withAnimation { shift(1) } } label: {
+                Image(systemName: "chevron.right.circle.fill").font(.title)
+            }
+            Spacer()
+            Button("This month") { model.monthAnchor = Date() }
+                .buttonStyle(.bordered)
+        }
+        .tint(Color(model.theme.accent))
+        .padding(.horizontal, 14)
+        .padding(.top, 10)
+    }
+
+    private var monthPicker: some View {
+        NavigationStack {
+            HStack(spacing: 0) {
+                Picker("Month", selection: $pickMonth) {
+                    ForEach(1...12, id: \.self) { m in
+                        Text(Week.calendar.monthSymbols[m - 1]).tag(m)
+                    }
+                }
+                .pickerStyle(.wheel)
+                Picker("Year", selection: $pickYear) {
+                    ForEach(2000...2100, id: \.self) { y in
+                        Text(String(y)).tag(y)
+                    }
+                }
+                .pickerStyle(.wheel)
+            }
+            .padding()
+            .navigationTitle("Choose a month")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { picking = false } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Go") {
+                        if let d = Week.calendar.date(from: DateComponents(year: pickYear, month: pickMonth, day: 1)) {
+                            model.monthAnchor = d
+                        }
+                        picking = false
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
 
     var body: some View {
+        VStack(spacing: 0) {
+            header
+            grid
+        }
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 40)
+                .onEnded { v in
+                    guard abs(v.translation.width) > abs(v.translation.height) * 1.5 else { return }
+                    withAnimation { shift(v.translation.width < 0 ? 1 : -1) }   // swipe left = next month
+                }
+        )
+        .sheet(isPresented: $picking) { monthPicker }
+    }
+
+    @ViewBuilder private var grid: some View {
         let first = Week.monthStart(model.monthAnchor)
         let last = Week.calendar.date(byAdding: DateComponents(month: 1, day: -1), to: first) ?? first
         let gridStart = Week.start(of: first)
@@ -108,7 +193,7 @@ private struct MonthWeekRow: View {
     private func bar(_ s: MonthSeg) -> some View {
         let c = Color(model.color(for: s.event.cat))
         let untitled = s.event.title.isEmpty
-        let label = (untitled ? model.name(for: s.event.cat) : s.event.title) + (s.event.hrs > 0 ? " · \(Int(s.event.hrs))h" : "")
+        let label = s.event.label(categoryName: model.name(for: s.event.cat))
         return HStack(spacing: 0) {
             Rectangle().fill(c).frame(width: 4)
             Text(label)
@@ -124,8 +209,7 @@ private struct MonthWeekRow: View {
 
     private func layout() -> MonthLayout {
         let weekEnd = Week.day(6, of: weekStart)
-        let evs = model.events
-            .filter { $0.start <= weekEnd && $0.end >= weekStart }
+        let evs = expandEvents(model.events, from: weekStart, to: weekEnd)
             .sorted { a, b in a.date == b.date ? a.days > b.days : a.date < b.date }
         var laneEnd: [Int] = []
         var out = MonthLayout()

@@ -127,7 +127,7 @@ final class PaperView: UIView {
 
     private func drawEvents(_ ctx: CGContext) {
         let t = theme
-        for g in EventLayout.geometry(week: week, events: shownEvents) {
+        for g in EventLayout.geometry(week: week, events: events, preview: preview) {
             let col = color(g.event.cat)
             for (i, b) in g.bands.enumerated() {
                 let first = i == 0 && g.startsHere
@@ -137,10 +137,10 @@ final class PaperView: UIView {
                 col.setFill()
                 ctx.fill(CGRect(x: b.minX, y: b.minY, width: 4, height: b.height))
                 if g.event.title.isEmpty {
-                    text(catName(g.event.cat), in: CGRect(x: b.minX + 14, y: b.minY + 6, width: b.width - 24, height: 20),
+                    text(g.event.label(categoryName: catName(g.event.cat)), in: CGRect(x: b.minX + 14, y: b.minY + 6, width: b.width - 24, height: 20),
                          UIFont.italicSystemFont(ofSize: 14), t.ink.withAlphaComponent(0.55), alignRight: true)
                 } else {
-                    text(g.event.title, in: CGRect(x: b.minX + 14, y: b.minY + 6, width: b.width - 28, height: 28),
+                    text(g.event.label(categoryName: catName(g.event.cat)), in: CGRect(x: b.minX + 14, y: b.minY + 6, width: b.width - 28, height: 28),
                          t.font(21, bold: true), t.ink)
                 }
             }

@@ -67,6 +67,12 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate, PKToolPi
         pan.maximumNumberOfTouches = 1
         overlay.addGestureRecognizer(pan)
 
+        // In Write mode: press and hold a line with your finger to type an event there.
+        let hold = UILongPressGestureRecognizer(target: self, action: #selector(handleHold(_:)))
+        hold.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        hold.minimumPressDuration = 0.45
+        view.addGestureRecognizer(hold)
+
         toolPicker.addObserver(canvas)
         toolPicker.addObserver(self)
         if let m = model {
@@ -215,6 +221,17 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate, PKToolPi
         m.beginNew(date: Week.day(s.row, of: week), line: s.line)
     }
 
+    @objc private func handleHold(_ g: UILongPressGestureRecognizer) {
+        guard g.state == .began, let m = model, m.mode == .write else { return }
+        let p = g.location(in: overlay)
+        if let hit = EventLayout.hit(p, in: EventLayout.geometry(week: week, events: m.events)) {
+            m.beginEdit(hit.geo.event)
+            return
+        }
+        guard let s = slot(p, clamp: false) else { return }
+        m.beginNew(date: Week.day(s.row, of: week), line: s.line)
+    }
+
     @objc private func handlePan(_ g: UIPanGestureRecognizer) {
         guard let m = model else { return }
         let p = g.location(in: overlay)
@@ -258,7 +275,7 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate, PKToolPi
                     e.id = UUID().uuidString
                     m.upsert(e)
                 case .move(let e, _, _), .resize(let e):
-                    if n != e { m.upsert(n) }
+                    if n != e { m.commitDrag(from: e, to: n) }
                 }
             }
             paper.preview = nil

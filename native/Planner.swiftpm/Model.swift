@@ -191,8 +191,29 @@ final class PlannerModel: ObservableObject {
         draft = EventDraft(event: PlannerEvent(date: Week.key(date), line: line, cat: currentCat), isNew: true)
     }
 
+    /// "+" button: a typed event on today (if it's on screen) or the first visible day.
+    func beginNewTyped() {
+        let today = Week.calendar.startOfDay(for: Date())
+        let visibleEnd = Week.day(pagesShown * 7 - 1, of: weekStart)
+        let day = (today >= weekStart && today <= visibleEnd) ? today : weekStart
+        beginNew(date: day, line: 0)
+    }
+
+    /// Tapping any occurrence of a repeating event edits the whole series.
     func beginEdit(_ e: PlannerEvent) {
-        draft = EventDraft(event: e, isNew: false)
+        let series = events.first { $0.id == e.seriesID } ?? e
+        draft = EventDraft(event: series, isNew: false)
+    }
+
+    /// A drag on the page: moving/stretching one occurrence moves/stretches its whole series.
+    func commitDrag(from old: PlannerEvent, to new: PlannerEvent) {
+        guard var series = events.first(where: { $0.id == old.seriesID }) else { return }
+        let shift = Week.days(from: old.start, to: new.start)
+        series.date = Week.key(Week.day(shift, of: series.start))
+        series.days = new.days
+        series.line = new.line
+        series.lines = new.lines
+        upsert(series)
     }
 
     func upsert(_ e: PlannerEvent) {

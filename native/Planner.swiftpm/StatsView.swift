@@ -35,7 +35,7 @@ struct StatsView: View {
         let total = recs.reduce(0) { $0 + $1.value }
         let byCat = Dictionary(grouping: recs, by: { $0.cat }).mapValues { $0.reduce(0) { $0 + $1.value } }
         let ranked = byCat.sorted { $0.value > $1.value }
-        let evCount = model.events.filter { $0.start <= win.to && $0.end >= win.from }.count
+        let evCount = expandEvents(model.events, from: win.from, to: win.to).count
         let spanDays = max(1, Week.days(from: win.from, to: win.to) + 1)
 
         ScrollView {
@@ -170,9 +170,10 @@ struct StatsView: View {
             return (Week.day(-83, of: t), t, "Last 12 weeks", .week)
         case .all:
             let starts = model.events.map { $0.start }
-            let ends = model.events.map { $0.end }
+            // repeating events with no end date count up to today
+            let ends = model.events.map { $0.repeats ? Date() : $0.end }
             let f = starts.min() ?? Date()
-            let t = ends.max() ?? Date()
+            let t = max(ends.max() ?? Date(), f)
             return (f, t, "All time", Week.days(from: f, to: t) > 26 * 7 ? .month : .week)
         }
     }
@@ -181,7 +182,7 @@ struct StatsView: View {
 
     private func records(from: Date, to: Date) -> [Rec] {
         var out: [Rec] = []
-        for e in model.events {
+        for e in expandEvents(model.events, from: from, to: to) {
             switch metric {
             case .days:
                 for k in 0..<e.days {
