@@ -148,5 +148,6 @@ final class InkStore {
         } else {
             Storage.shared.write(drawing.dataRepresentation(), name(week))
         }
+        NotificationCenter.default.post(name: .plannerInkSaved, object: Week.key(week))
     }
 }

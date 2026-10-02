@@ -8,6 +8,7 @@ struct MonthView: View {
     @State private var pickYear = 2026
     @State private var selectedDay: DayPick?
     @StateObject private var ink = MonthInk()
+    @AppStorage("monthShowWriting") private var showInk = true
 
     private func shift(_ n: Int) {
         model.monthAnchor = Week.calendar.date(byAdding: .month, value: n, to: Week.monthStart(model.monthAnchor)) ?? model.monthAnchor
@@ -33,6 +34,11 @@ struct MonthView: View {
                 Image(systemName: "chevron.right.circle.fill").font(.title)
             }
             Spacer()
+            Toggle(isOn: $showInk) {
+                Label("Writing", systemImage: showInk ? "scribble.variable" : "eye.slash")
+            }
+            .toggleStyle(.button)
+            .accessibilityHint("Show or hide your handwriting in Month view")
             Button("This month") { model.monthAnchor = Date() }
                 .buttonStyle(.bordered)
             Button {
@@ -98,7 +104,10 @@ struct MonthView: View {
                 }
         )
         .sheet(isPresented: $picking) { monthPicker }
-        .onAppear { ink.reset() }
+        .onAppear { prepareInk() }
+        .onChange(of: model.monthAnchor) { _ in prepareInk() }
+        .onChange(of: showInk) { _ in prepareInk() }
+        .onChange(of: model.themeID) { _ in prepareInk() }
         .sheet(item: $selectedDay) { pick in
             DayCard(date: pick.date) { action in
                 selectedDay = nil
@@ -117,6 +126,39 @@ struct MonthView: View {
             }
             .environmentObject(model)
         }
+    }
+
+    private var gridWeeks: [Date] {
+        let first = Week.monthStart(model.monthAnchor)
+        let last = Week.calendar.date(byAdding: DateComponents(month: 1, day: -1), to: first) ?? first
+        let gridStart = Week.start(of: first)
+        let weeks = Week.days(from: gridStart, to: Week.start(of: last)) / 7 + 1
+        return (0..<weeks).map { Week.adding($0, to: gridStart) }
+    }
+
+    private func prepareInk() {
+        guard showInk else { return }
+        ink.prepare(weeks: gridWeeks, dark: model.theme.dark, scale: UIScreen.main.scale * 0.8)
+    }
+
+    /// A finger tap that landed on the writing layer: open the event bar or day that's under it.
+    private func tapThrough(_ p: CGPoint, _ size: CGSize, gridStart: Date, weeks: Int, maxLanes: Int) {
+        let cellW = size.width / 7
+        let cellH = size.height / CGFloat(max(weeks, 1))
+        let row = min(max(Int(p.y / cellH), 0), weeks - 1)
+        let col = min(max(Int(p.x / cellW), 0), 6)
+        let lay = monthRowLayout(weekStart: Week.adding(row, to: gridStart), events: model.events, maxLanes: maxLanes)
+        let localY = p.y - CGFloat(row) * cellH
+        for seg in lay.segs {
+            let x0 = cellW * CGFloat(seg.start) + 4
+            let x1 = cellW * CGFloat(seg.end + 1) - 4
+            let y0 = 34 + CGFloat(seg.lane) * 23
+            if p.x >= x0 && p.x <= x1 && localY >= y0 && localY <= y0 + 20 {
+                model.beginEdit(seg.event)
+                return
+            }
+        }
+        selectedDay = DayPick(date: Week.day(row * 7 + col, of: gridStart))
     }
 
     @ViewBuilder private var grid: some View {
@@ -141,12 +183,19 @@ struct MonthView: View {
             VStack(spacing: 0) {
                 ForEach(0..<weeks, id: \.self) { w in
                     MonthWeekRow(weekStart: Week.adding(w, to: gridStart), month: month, maxLanes: weeks > 5 ? 3 : 4,
-                                 ink: ink, onDay: { selectedDay = DayPick(date: $0) })
+                                 ink: ink, showInk: showInk, onDay: { selectedDay = DayPick(date: $0) })
                 }
             }
-            // Pencil writing layer: what you write in a day box goes onto that day's planner row
-            .overlay(MonthInkCanvas(gridStart: gridStart, weeks: weeks, enabled: model.mode == .write,
-                                    dark: t.dark, ink: ink))
+            // Pencil writing layer (Write mode + Writing shown): what you write in a day box goes
+            // onto that day's planner row. Finger taps/swipes on it are passed through.
+            .overlay {
+                if showInk && model.mode == .write {
+                    MonthInkCanvas(gridStart: gridStart, weeks: weeks, dark: t.dark, ink: ink,
+                                   onTap: { p, size in tapThrough(p, size, gridStart: gridStart, weeks: weeks, maxLanes: weeks > 5 ? 3 : 4) },
+                                   onSwipe: { n in withAnimation { shift(n) } },
+                                   onCommitted: { prepareInk() })
+                }
+            }
         }
         .foregroundStyle(Color(t.ink))
         .background(Color(t.paper))
@@ -174,6 +223,7 @@ private struct MonthWeekRow: View {
     let month: Int
     let maxLanes: Int
     @ObservedObject var ink: MonthInk
+    let showInk: Bool
     let onDay: (Date) -> Void
 
     var body: some View {
@@ -187,7 +237,7 @@ private struct MonthWeekRow: View {
                         dayCell(i, hidden: lay.hidden[i])
                             .frame(width: colW, height: geo.size.height)
                             .overlay(alignment: .topLeading) {
-                                miniature(i, cellW: colW, cellH: geo.size.height)
+                                if showInk { miniature(i, cellW: colW, cellH: geo.size.height) }
                             }
                     }
                 }
@@ -264,25 +314,30 @@ private struct MonthWeekRow: View {
     }
 
     private func layout() -> MonthLayout {
-        let weekEnd = Week.day(6, of: weekStart)
-        let evs = expandEvents(model.events, from: weekStart, to: weekEnd)
-            .sorted { a, b in a.date == b.date ? a.days > b.days : a.date < b.date }
-        var laneEnd: [Int] = []
-        var out = MonthLayout()
-        for e in evs {
-            let off = Week.days(from: weekStart, to: e.start)
-            let si = max(0, off), ei = min(6, off + e.days - 1)
-            var lane = laneEnd.firstIndex(where: { $0 < si }) ?? laneEnd.count
-            if lane == laneEnd.count { laneEnd.append(ei) } else { laneEnd[lane] = ei }
-            if lane >= maxLanes {
-                for d in si...ei { out.hidden[d] += 1 }
-                continue
-            }
-            lane = min(lane, maxLanes - 1)
-            out.segs.append(MonthSeg(id: e.id, start: si, end: ei, lane: lane, event: e))
-        }
-        return out
+        monthRowLayout(weekStart: weekStart, events: model.events, maxLanes: maxLanes)
     }
+}
+
+/// Lanes for one week row of the month (shared by drawing and tap handling).
+fileprivate func monthRowLayout(weekStart: Date, events: [PlannerEvent], maxLanes: Int) -> MonthLayout {
+    let weekEnd = Week.day(6, of: weekStart)
+    let evs = expandEvents(events, from: weekStart, to: weekEnd)
+        .sorted { a, b in a.date == b.date ? a.days > b.days : a.date < b.date }
+    var laneEnd: [Int] = []
+    var out = MonthLayout()
+    for e in evs {
+        let off = Week.days(from: weekStart, to: e.start)
+        let si = max(0, off), ei = min(6, off + e.days - 1)
+        var lane = laneEnd.firstIndex(where: { $0 < si }) ?? laneEnd.count
+        if lane == laneEnd.count { laneEnd.append(ei) } else { laneEnd[lane] = ei }
+        if lane >= maxLanes {
+            for d in si...ei { out.hidden[d] += 1 }
+            continue
+        }
+        lane = min(lane, maxLanes - 1)
+        out.segs.append(MonthSeg(id: e.id, start: si, end: ei, lane: lane, event: e))
+    }
+    return out
 }
 
 struct DayPick: Identifiable {

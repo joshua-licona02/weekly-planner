@@ -4,6 +4,8 @@ import PencilKit
 extension Notification.Name {
     /// Posted with the week key (String) when a week's ink was changed from Month view.
     static let plannerInkChangedElsewhere = Notification.Name("plannerInkChangedElsewhere")
+    /// Posted with the week key (String) whenever a week's ink is written to disk.
+    static let plannerInkSaved = Notification.Name("plannerInkSaved")
 }
 
 /// The writing area of one day row on a weekly page, in page coordinates.
@@ -11,55 +13,90 @@ func dayRowRect(_ index: Int) -> CGRect {
     CGRect(x: Page.gx + Page.lab, y: Page.rowY(index), width: Page.right - (Page.gx + Page.lab), height: Page.dayH)
 }
 
-/// Loads the weekly handwriting for Month view, makes per-day miniatures, and writes
-/// ink done in Month view back into the right day row of the right weekly page.
+private func strokes(in d: PKDrawing, row: Int) -> [PKStroke] {
+    let rect = dayRowRect(row)
+    return d.strokes.filter { rect.contains(CGPoint(x: $0.renderBounds.midX, y: $0.renderBounds.midY)) }
+}
+
+/// Month view's handwriting: per-day miniatures rendered in the background and cached
+/// (so the month opens instantly), and ink written in Month view placed onto the planner.
 final class MonthInk: ObservableObject {
     @Published private(set) var version = 0
-    private var drawings: [String: PKDrawing] = [:]
-    private var images: [String: (UIImage, CGRect)] = [:]
+    private var images: [String: (UIImage, CGRect)] = [:]   // "<day key>|d/l"
+    private var ready = Set<String>()                         // "<week key>|d/l" rendered
+    private var inFlight = Set<String>()
+    private let queue = DispatchQueue(label: "planner.month-ink", qos: .userInitiated)
+    private var observer: NSObjectProtocol?
 
-    func reset() {
-        drawings.removeAll()
-        images.removeAll()
-        version += 1
-    }
-
-    private func drawing(for week: Date) -> PKDrawing {
-        let key = Week.key(week)
-        if let d = drawings[key] { return d }
-        let d = InkStore.shared.load(week)
-        drawings[key] = d
-        return d
-    }
-
-    private func strokes(in d: PKDrawing, row: Int) -> [PKStroke] {
-        let rect = dayRowRect(row)
-        return d.strokes.filter { rect.contains(CGPoint(x: $0.renderBounds.midX, y: $0.renderBounds.midY)) }
-    }
-
-    /// A miniature of what's written on that day, plus the page-space rect it covers.
-    func miniature(for day: Date, dark: Bool) -> (UIImage, CGRect)? {
-        let key = Week.key(day) + (dark ? "d" : "l")
-        if let hit = images[key] { return hit }
-        let week = Week.start(of: day)
-        let row = Week.days(from: week, to: day)
-        let list = strokes(in: drawing(for: week), row: row)
-        guard !list.isEmpty else { return nil }
-        let bounds = list.reduce(CGRect.null) { $0.union($1.renderBounds) }.insetBy(dx: -4, dy: -4)
-        var image = UIImage()
-        UITraitCollection(userInterfaceStyle: dark ? .dark : .light).performAsCurrent {
-            image = PKDrawing(strokes: list).image(from: bounds, scale: UIScreen.main.scale)
+    init() {
+        observer = NotificationCenter.default.addObserver(forName: .plannerInkSaved, object: nil, queue: .main) { [weak self] n in
+            if let key = n.object as? String { self?.invalidate(weekKey: key) }
         }
-        images[key] = (image, bounds)
-        return (image, bounds)
     }
 
-    /// Strokes written over a day box (in box coordinates, box size `cell`) go into that
+    deinit {
+        if let o = observer { NotificationCenter.default.removeObserver(o) }
+    }
+
+    /// Cached miniature for a day (nil if nothing written or not rendered yet).
+    func miniature(for day: Date, dark: Bool) -> (UIImage, CGRect)? {
+        images[Week.key(day) + (dark ? "|d" : "|l")]
+    }
+
+    private func invalidate(weekKey: String) {
+        ready = ready.filter { !$0.hasPrefix(weekKey) }
+        guard let week = Week.date(fromKey: weekKey) else { return }
+        for i in 0..<7 {
+            let k = Week.key(Week.day(i, of: week))
+            images[k + "|d"] = nil
+            images[k + "|l"] = nil
+        }
+    }
+
+    /// Render miniatures for these weeks in the background; the view refreshes when they're ready.
+    func prepare(weeks: [Date], dark: Bool, scale: CGFloat) {
+        let mode = dark ? "|d" : "|l"
+        let todo = weeks.filter { w in
+            let k = Week.key(w) + mode
+            return !ready.contains(k) && !inFlight.contains(k)
+        }
+        guard !todo.isEmpty else { return }
+        todo.forEach { inFlight.insert(Week.key($0) + mode) }
+
+        queue.async { [weak self] in
+            var rendered: [String: (UIImage, CGRect)] = [:]
+            for week in todo {
+                let drawing = InkStore.shared.load(week)
+                for row in 0..<7 {
+                    let list = strokes(in: drawing, row: row)
+                    guard !list.isEmpty else { continue }
+                    let bounds = list.reduce(CGRect.null) { $0.union($1.renderBounds) }.insetBy(dx: -4, dy: -4)
+                    var image = UIImage()
+                    UITraitCollection(userInterfaceStyle: dark ? .dark : .light).performAsCurrent {
+                        image = PKDrawing(strokes: list).image(from: bounds, scale: scale)
+                    }
+                    rendered[Week.key(Week.day(row, of: week)) + mode] = (image, bounds)
+                }
+            }
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                for (k, v) in rendered { self.images[k] = v }
+                for week in todo {
+                    let k = Week.key(week) + mode
+                    self.inFlight.remove(k)
+                    self.ready.insert(k)
+                }
+                self.version += 1
+            }
+        }
+    }
+
+    /// Strokes written over a day box (in box coordinates, box size `cellSize`) go into that
     /// day's row on the weekly page, scaled up, placed after anything already written there.
     func add(_ newStrokes: [PKStroke], cellOrigin: CGPoint, cellSize: CGSize, day: Date, shift: inout CGFloat?) {
         let week = Week.start(of: day)
         let row = Week.days(from: week, to: day)
-        var d = drawing(for: week)
+        var d = InkStore.shared.load(week)          // always fresh from disk
         let rowRect = dayRowRect(row)
         let x0 = EventLayout.writeX
         let s = Page.dayH / max(cellSize.height, 1)
@@ -78,47 +115,48 @@ final class MonthInk: ObservableObject {
             stroke.transform = stroke.transform.concatenating(map)
             d.strokes.append(stroke)
         }
-        drawings[Week.key(week)] = d
-        images = images.filter { !$0.key.hasPrefix(Week.key(day)) }
-        InkStore.shared.save(d, week: week)
+        InkStore.shared.save(d, week: week)        // also invalidates this week's miniatures
         NotificationCenter.default.post(name: .plannerInkChangedElsewhere, object: Week.key(week))
-        version += 1
     }
 }
 
-/// A PencilKit canvas that only claims Apple Pencil touches, so fingers still reach
-/// the days and event bars underneath.
-final class PencilOnlyCanvas: PKCanvasView {
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        guard let touches = event?.allTouches, touches.contains(where: { $0.type == .pencil }) else { return nil }
-        return super.hitTest(point, with: event)
-    }
-}
-
-/// Transparent writing layer over the month grid.
+/// Transparent writing layer over the month grid. The Pencil writes; finger taps and
+/// swipes are handed back to Month view (to open days/events or change month).
 struct MonthInkCanvas: UIViewRepresentable {
     let gridStart: Date
     let weeks: Int
-    let enabled: Bool
     let dark: Bool
     let ink: MonthInk
+    let onTap: (CGPoint, CGSize) -> Void
+    let onSwipe: (Int) -> Void
+    let onCommitted: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeUIView(context: Context) -> PencilOnlyCanvas {
-        let c = PencilOnlyCanvas()
+    func makeUIView(context: Context) -> PKCanvasView {
+        let c = PKCanvasView()
         c.backgroundColor = .clear
         c.isOpaque = false
         c.drawingPolicy = .pencilOnly
         c.isScrollEnabled = false
         c.tool = PKInkingTool(.pen, color: .black, width: 2.2)
         c.delegate = context.coordinator
+
+        let finger = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tapped(_:)))
+        tap.allowedTouchTypes = finger
+        c.addGestureRecognizer(tap)
+        for dir in [UISwipeGestureRecognizer.Direction.left, .right] {
+            let swipe = UISwipeGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.swiped(_:)))
+            swipe.direction = dir
+            swipe.allowedTouchTypes = finger
+            c.addGestureRecognizer(swipe)
+        }
         return c
     }
 
-    func updateUIView(_ c: PencilOnlyCanvas, context: Context) {
+    func updateUIView(_ c: PKCanvasView, context: Context) {
         context.coordinator.parent = self
-        c.isUserInteractionEnabled = enabled
         c.overrideUserInterfaceStyle = dark ? .dark : .light
     }
 
@@ -127,6 +165,15 @@ struct MonthInkCanvas: UIViewRepresentable {
         private var pending: DispatchWorkItem?
         private var clearing = false
         private var shifts: [String: CGFloat?] = [:]   // one placement per day while you write
+
+        @objc func tapped(_ g: UITapGestureRecognizer) {
+            guard let v = g.view else { return }
+            parent?.onTap(g.location(in: v), v.bounds.size)
+        }
+
+        @objc func swiped(_ g: UISwipeGestureRecognizer) {
+            parent?.onSwipe(g.direction == .left ? 1 : -1)
+        }
 
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
             guard !clearing else { return }
@@ -152,18 +199,27 @@ struct MonthInkCanvas: UIViewRepresentable {
                 let row = min(max(Int(c.y / cellH), 0), p.weeks - 1)
                 byDay[row * 7 + col, default: []].append(s)
             }
-            for (index, strokes) in byDay {
+            for (index, list) in byDay {
                 let row = index / 7, col = index % 7
                 let day = Week.day(row * 7 + col, of: p.gridStart)
                 let key = Week.key(day)
                 var shift: CGFloat? = shifts[key] ?? nil
-                p.ink.add(strokes, cellOrigin: CGPoint(x: CGFloat(col) * cellW, y: CGFloat(row) * cellH),
+                p.ink.add(list, cellOrigin: CGPoint(x: CGFloat(col) * cellW, y: CGFloat(row) * cellH),
                           cellSize: CGSize(width: cellW, height: cellH), day: day, shift: &shift)
                 shifts[key] = shift
             }
-            clearing = true
-            canvas.drawing = PKDrawing()
-            clearing = false
+            p.onCommitted()
+            // keep the ink on screen until its miniature has been drawn, then remove just
+            // those strokes (anything you started writing meanwhile stays)
+            let committed = canvas.drawing.strokes.count
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self, weak canvas] in
+                guard let self = self, let canvas = canvas else { return }
+                let rest = Array(canvas.drawing.strokes.dropFirst(committed))
+                self.clearing = true
+                canvas.drawing = PKDrawing(strokes: rest)
+                self.clearing = false
+                if !rest.isEmpty { self.canvasViewDrawingDidChange(canvas) }
+            }
         }
     }
 }
