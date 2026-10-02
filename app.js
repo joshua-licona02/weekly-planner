@@ -398,6 +398,16 @@ function commitEvent(before, after) {
 
 /* ───────────── Pointer input ───────────── */
 let cur = null, flipping = false;
+
+/* Palm rejection: the Pencil always wins. While the pen is down, hovering, or was
+   just lifted, touches are ignored (they cannot draw, pinch, swipe or tap), and if a
+   palm landed first, the pen takes over the moment it touches. */
+let lastPenAt = 0, penSeen = false;
+const recentPen = () => performance.now() - lastPenAt < 700;
+const isPalm = e => e.pointerType === 'touch' && (Math.max(e.width || 0, e.height || 0) > 40);
+for (const t of ['pointerdown', 'pointermove', 'pointerup']) {
+  document.addEventListener(t, e => { if (e.pointerType === 'pen') { lastPenAt = performance.now(); penSeen = true; } }, true);
+}
 const pageOfEl = el => (el === pgL.el ? pgL : pgR);
 function toPage(e, pg) {
   const r = pg.el.getBoundingClientRect();
@@ -447,16 +457,17 @@ function hitEvent(pg, pt) {
 
 function onDown(e) {
   const pg = pageOfEl(e.currentTarget);
-  if (flipping || pinch) return;
-  if (cur) {
-    if (cur.type === 'nav' && e.pointerType === 'pen') cur = null; // pen wins over a resting palm
-    else return;
-  }
+  if (flipping) return;
+  if (e.pointerType === 'pen') {
+    if (pinch) cancelPinch();                  // a palm "pinch" must not hijack the pen
+    if (cur && cur.touch) abortCur();          // pen wins over a resting palm
+  } else if (e.pointerType === 'touch' && (recentPen() || isPalm(e))) { e.preventDefault(); return; }
+  if (pinch || cur) return;
   e.preventDefault();
   closePop(); closeDrops();
   const isTouch = e.pointerType === 'touch';
-  const canAct = !isTouch || S.settings.fingerDraws || S.tool === 'event';
-  pg.el.setPointerCapture(e.pointerId);
+  const canAct = !isTouch || (S.settings.fingerDraws && !penSeen) || S.tool === 'event';
+  try { pg.el.setPointerCapture(e.pointerId); } catch (err) { /* pointer already gone */ }
 
   if (!canAct) {
     cur = { touch: true, pid: e.pointerId, type: 'nav', x0: e.clientX, y0: e.clientY, t0: performance.now(), sl: scroller.scrollLeft, st: scroller.scrollTop };
@@ -535,7 +546,7 @@ function onUp(e) {
 
   if (c.type === 'nav') {
     const dx = e.clientX - c.x0, dy = e.clientY - c.y0;
-    if (S.zoom === 1 && !cancelled && !pinch && performance.now() - c.t0 < 800 && Math.abs(dx) > 110 && Math.abs(dx) > 2.5 * Math.abs(dy)) flip(dx < 0 ? 1 : -1);
+    if (S.zoom === 1 && !cancelled && !pinch && performance.now() - c.t0 < 800 && Math.abs(dx) > 110 && Math.abs(dx) > 2.5 * Math.abs(dy) && !recentPen()) flip(dx < 0 ? 1 : -1);
   } else if (c.type === 'draw') {
     const s = c.s, n = s.p.length, pg = c.pg;
     if (cancelled && n < 2) return;
@@ -669,6 +680,7 @@ function abortCur() {
   else if (c.type === 'erase' && c.items.length) { c.pg.strokes = c.orig; queueInk(c.pg); }
   queueBg();
 }
+function cancelPinch() { pinch = null; book.style.transform = ''; book.style.transformOrigin = ''; }
 function setZoom(z, fx, fy, cx, cy) {
   S.zoom = z;
   layout();
@@ -679,7 +691,7 @@ function setZoom(z, fx, fy, cx, cy) {
   } else { scroller.scrollLeft = 0; scroller.scrollTop = 0; }
 }
 scroller.addEventListener('pointerdown', e => {
-  if (e.pointerType !== 'touch' || S.view !== 'planner' || flipping) return;
+  if (e.pointerType !== 'touch' || S.view !== 'planner' || flipping || recentPen() || isPalm(e)) return;
   touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (touches.size === 2) {
     abortCur();
@@ -692,6 +704,7 @@ scroller.addEventListener('pointermove', e => {
   if (!touches.has(e.pointerId)) return;
   touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (!pinch || touches.size < 2) return;
+  if (recentPen()) return cancelPinch();
   e.preventDefault();
   const st = pinchState();
   pinch.ratio = clamp(pinch.z0 * st.dist / pinch.d0, 1, 4) / pinch.z0;
