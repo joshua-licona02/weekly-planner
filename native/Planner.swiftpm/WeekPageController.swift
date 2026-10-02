@@ -3,7 +3,7 @@ import PencilKit
 
 /// One planner page: printed paper underneath, Apple's PencilKit canvas on top, and an
 /// events layer that takes over touches in Events mode.
-final class WeekPageController: UIViewController, PKCanvasViewDelegate {
+final class WeekPageController: UIViewController, PKCanvasViewDelegate, PKToolPickerObserver {
     let week: Date
     private weak var model: PlannerModel?
     private let toolPicker: PKToolPicker
@@ -15,6 +15,7 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate {
     private var fitScale: CGFloat = 0
     private var toolsVisible = false
     private var dirty = false          // only ever write pages you actually changed
+    private var obscuredBottom: CGFloat = 0   // height hidden behind Apple's docked tool palette
 
     /// Called with `true` while the page is zoomed in (so finger page-turns are paused).
     var onZoomChanged: ((Bool) -> Void)?
@@ -67,6 +68,7 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate {
         overlay.addGestureRecognizer(pan)
 
         toolPicker.addObserver(canvas)
+        toolPicker.addObserver(self)
         if let m = model {
             applyTheme(m.theme)
             refreshEvents()
@@ -83,7 +85,7 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate {
         super.viewDidLayoutSubviews()
         let b = view.bounds.size
         guard b.width > 0, b.height > 0 else { return }
-        let fit = min(b.width / Page.width, b.height / Page.height)
+        let fit = min(b.width / Page.width, max(b.height - obscuredBottom, 100) / Page.height)
         if abs(fit - fitScale) > 0.0001 {
             fitScale = fit
             canvas.minimumZoomScale = fit
@@ -137,14 +139,29 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate {
         if visible { canvas.becomeFirstResponder() }
     }
 
+    // MARK: Apple's tool palette: keep the whole page visible above it when it's docked
+
+    func toolPickerFramesObscuredDidChange(_ toolPicker: PKToolPicker) {
+        let r = toolPicker.frameObscured(in: view)
+        let bottom = r.isNull ? 0 : max(0, view.bounds.maxY - r.minY)
+        guard abs(bottom - obscuredBottom) > 1 else { return }
+        obscuredBottom = bottom
+        fitScale = 0                       // re-fit the page to the new space
+        view.setNeedsLayout()
+    }
+
+    func toolPickerVisibilityDidChange(_ toolPicker: PKToolPicker) {
+        toolPickerFramesObscuredDidChange(toolPicker)
+    }
+
     // MARK: zoom + keeping paper/events layer under the ink
 
     private func centerContent() {
         let z = canvas.zoomScale
         let w = Page.width * z, h = Page.height * z
         let ix = max(0, (canvas.bounds.width - w) / 2)
-        let iy = max(0, (canvas.bounds.height - h) / 2)
-        canvas.contentInset = UIEdgeInsets(top: iy, left: ix, bottom: iy, right: ix)
+        let iy = max(0, (canvas.bounds.height - obscuredBottom - h) / 2)
+        canvas.contentInset = UIEdgeInsets(top: iy, left: ix, bottom: iy + obscuredBottom, right: ix)
         syncLayers()
     }
 

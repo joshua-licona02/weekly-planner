@@ -49,59 +49,91 @@ struct ContentView: View {
 
     // MARK: top bar
 
+    /// One row when there's room (landscape); in portrait the Planner/Month/Stats switch
+    /// drops to a second row so nothing gets squeezed.
     private var topBar: some View {
-        HStack(spacing: 8) {
-            barButton("chevron.left", "Previous") { step(-1) }
-            barButton("chevron.right", "Next") { step(1) }
-            Button("Today") { goToday() }
-                .buttonStyle(BarButtonStyle())
-            if model.screen == .planner {
-                barButton("calendar", "Jump to date") { jumpDate = model.weekStart; jumping = true }
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                navButtons
+                Spacer(minLength: 8)
+                titleView
+                Spacer(minLength: 8)
+                screenPicker
+                actionButtons
             }
-
-            Spacer(minLength: 8)
-            VStack(spacing: 0) {
-                Text(titleText).font(.headline)
-                if model.screen == .planner { Text(model.subtitle).font(.caption).opacity(0.8) }
-            }
-            .lineLimit(1)
-            Spacer(minLength: 8)
-
-            Picker("Screen", selection: $model.screen) {
-                ForEach(Screen.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 230)
-            .environment(\.colorScheme, .dark)
-
-            if model.screen == .planner {
-                Button {
-                    model.mode = model.mode == .write ? .events : .write
-                } label: {
-                    Label(model.mode == .write ? "Write" : "Events",
-                          systemImage: model.mode == .write ? "pencil.tip" : "rectangle.stack.badge.plus")
-                        .labelStyle(.titleAndIcon)
-                        .padding(.horizontal, 6)
+            VStack(spacing: 6) {
+                HStack(spacing: 8) {
+                    navButtons
+                    Spacer(minLength: 8)
+                    titleView
+                    Spacer(minLength: 8)
+                    actionButtons
                 }
-                .buttonStyle(BarButtonStyle(highlighted: model.mode == .events))
-                .accessibilityHint("Switch between writing and adding or moving events")
-
-                barButton("arrow.uturn.backward", "Undo") { model.commands.send(.undo) }
-                barButton("arrow.uturn.forward", "Redo") { model.commands.send(.redo) }
-                if model.mode == .write {
-                    barButton(model.showTools ? "pencil.tip.crop.circle.fill" : "pencil.tip.crop.circle",
-                              "Show or hide Apple Pencil tools") { model.showTools.toggle() }
-                }
-            }
-            barButton("gearshape", "Settings") { model.showSettings = true }
-            barButton("arrow.up.left.and.arrow.down.right", "Full screen") {
-                withAnimation { model.fullScreen = true }
+                screenPicker
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .foregroundStyle(.white)
         .background(Color(model.theme.chrome).ignoresSafeArea(edges: .top))
+    }
+
+    @ViewBuilder private var navButtons: some View {
+        barButton("chevron.left", "Previous") { step(-1) }
+        barButton("chevron.right", "Next") { step(1) }
+        Button { goToday() } label: {
+            Text("Today").padding(.horizontal, 8)
+        }
+        .buttonStyle(BarButtonStyle())
+        .fixedSize()
+        if model.screen == .planner {
+            barButton("calendar", "Jump to date") { jumpDate = model.weekStart; jumping = true }
+        }
+    }
+
+    private var titleView: some View {
+        VStack(spacing: 0) {
+            Text(titleText).font(.headline)
+            if model.screen == .planner { Text(model.subtitle).font(.caption).opacity(0.8) }
+        }
+        .lineLimit(1)
+        .fixedSize()
+    }
+
+    private var screenPicker: some View {
+        Picker("Screen", selection: $model.screen) {
+            ForEach(Screen.allCases) { Text($0.rawValue).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 260)
+        .environment(\.colorScheme, .dark)
+    }
+
+    @ViewBuilder private var actionButtons: some View {
+        if model.screen == .planner {
+            Button {
+                model.mode = model.mode == .write ? .events : .write
+            } label: {
+                Label(model.mode == .write ? "Write" : "Events",
+                      systemImage: model.mode == .write ? "pencil.tip" : "rectangle.stack.badge.plus")
+                    .labelStyle(.titleAndIcon)
+                    .padding(.horizontal, 8)
+            }
+            .buttonStyle(BarButtonStyle(highlighted: model.mode == .events))
+            .fixedSize()
+            .accessibilityHint("Switch between writing and adding or moving events")
+
+            barButton("arrow.uturn.backward", "Undo") { model.commands.send(.undo) }
+            barButton("arrow.uturn.forward", "Redo") { model.commands.send(.redo) }
+            if model.mode == .write {
+                barButton(model.showTools ? "pencil.tip.crop.circle.fill" : "pencil.tip.crop.circle",
+                          "Show or hide Apple Pencil tools") { model.showTools.toggle() }
+            }
+        }
+        barButton("gearshape", "Settings") { model.showSettings = true }
+        barButton("arrow.up.left.and.arrow.down.right", "Full screen") {
+            withAnimation { model.fullScreen = true }
+        }
     }
 
     /// Category chips + how-to, shown while in Events mode.
@@ -167,6 +199,7 @@ struct ContentView: View {
             Image(systemName: icon).frame(width: 40, height: 40)
         }
         .buttonStyle(BarButtonStyle())
+        .fixedSize()
         .accessibilityLabel(label)
     }
 
