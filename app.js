@@ -148,7 +148,7 @@ const rgba = (hex, a) => {
 };
 
 function layout() {
-  const aw = scroller.clientWidth - 16, ah = scroller.clientHeight - 16;
+  const aw = scroller.clientWidth - 12, ah = scroller.clientHeight - 12;
   const n = aw / ah >= 1.3 ? 2 : 1, changed = n !== S.n;
   S.n = n;
   pgR.el.hidden = n === 1;
@@ -447,19 +447,19 @@ function hitEvent(pg, pt) {
 
 function onDown(e) {
   const pg = pageOfEl(e.currentTarget);
-  if (flipping) return;
+  if (flipping || pinch) return;
   if (cur) {
     if (cur.type === 'nav' && e.pointerType === 'pen') cur = null; // pen wins over a resting palm
     else return;
   }
   e.preventDefault();
-  closePop();
+  closePop(); closeDrops();
   const isTouch = e.pointerType === 'touch';
   const canAct = !isTouch || S.settings.fingerDraws || S.tool === 'event';
   pg.el.setPointerCapture(e.pointerId);
 
   if (!canAct) {
-    cur = { pid: e.pointerId, type: 'nav', x0: e.clientX, y0: e.clientY, t0: performance.now(), sl: scroller.scrollLeft, st: scroller.scrollTop };
+    cur = { touch: true, pid: e.pointerId, type: 'nav', x0: e.clientX, y0: e.clientY, t0: performance.now(), sl: scroller.scrollLeft, st: scroller.scrollTop };
     return;
   }
   const pt = toPage(e, pg);
@@ -482,6 +482,7 @@ function onDown(e) {
       cur = { pid: e.pointerId, type: 'ecreate', pg, row, line0: tg.line, x0: e.clientX, y0: e.clientY, moved: false };
     }
   }
+  if (cur) cur.touch = isTouch;
 }
 
 function onMove(e) {
@@ -534,7 +535,7 @@ function onUp(e) {
 
   if (c.type === 'nav') {
     const dx = e.clientX - c.x0, dy = e.clientY - c.y0;
-    if (S.zoom === 1 && !cancelled && performance.now() - c.t0 < 800 && Math.abs(dx) > 110 && Math.abs(dx) > 2.5 * Math.abs(dy)) flip(dx < 0 ? 1 : -1);
+    if (S.zoom === 1 && !cancelled && !pinch && performance.now() - c.t0 < 800 && Math.abs(dx) > 110 && Math.abs(dx) > 2.5 * Math.abs(dy)) flip(dx < 0 ? 1 : -1);
   } else if (c.type === 'draw') {
     const s = c.s, n = s.p.length, pg = c.pg;
     if (cancelled && n < 2) return;
@@ -624,6 +625,8 @@ document.addEventListener('pointerdown', e => { if (!$('pop').hidden && !e.targe
 /* ───────────── Toolbar ───────────── */
 function renderCtx() {
   const el = $('ctx');
+  $('optDot').style.background = S.tool === 'pen' ? inkColor(S.color) : S.tool === 'hl' ? S.hcolor : S.tool === 'event' ? catColor(S.cat) : 'transparent';
+  $('optBtn').style.visibility = S.tool === 'eraser' ? 'hidden' : 'visible';
   document.querySelectorAll('#tools [data-tool]').forEach(b => b.classList.toggle('on', b.dataset.tool === S.tool));
   if (S.tool === 'pen') {
     el.innerHTML = PEN_COLORS.map(c => `<button class="sw ${c === S.color ? 'on' : ''}" data-color="${c}" style="background:${c === 'auto' ? theme().ink : c}" aria-label="Ink ${c}"></button>`).join('') +
@@ -641,23 +644,105 @@ function renderCtx() {
 $('tools').addEventListener('click', e => {
   const b = e.target.closest('[data-tool]');
   if (!b) return;
-  S.tool = b.dataset.tool; S.preview = null; renderCtx(); queueBg();
+  if (b.dataset.tool === S.tool) return b.dataset.tool === 'eraser' ? null : toggleOpt();
+  S.tool = b.dataset.tool; S.preview = null; closeDrops(); renderCtx(); queueBg();
 });
 $('ctx').addEventListener('click', e => {
   const t = e.target.closest('button'); if (!t) return;
   if (t.dataset.color) S.color = t.dataset.color;
   else if (t.dataset.hcolor) S.hcolor = t.dataset.hcolor;
   else if (t.dataset.size) S.size[S.tool === 'hl' ? 'hl' : 'pen'] = +t.dataset.size;
-  else if (t.dataset.cat) S.cat = t.dataset.cat;
+  else if (t.dataset.cat) { S.cat = t.dataset.cat; closeDrops(); }
   renderCtx();
 });
 $('undoBtn').onclick = undo;
 $('redoBtn').onclick = redo;
-$('zoomBtn').onclick = () => {
-  S.zoom = S.zoom === 1 ? 1.5 : S.zoom === 1.5 ? 2 : 1;
-  $('zoomBtn').textContent = S.zoom + '×';
+
+/* ───────────── Pinch / wheel zoom ───────────── */
+const touches = new Map();
+let pinch = null;
+const pinchState = () => { const [a, b] = [...touches.values()]; return { dist: Math.hypot(a.x - b.x, a.y - b.y) || 1, cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 }; };
+function abortCur() {
+  if (!cur || !(cur.touch || cur.type === 'nav')) return;
+  const c = cur; cur = null; S.preview = null;
+  if (c.type === 'draw') { c.pg.livex.clearRect(0, 0, PW, PH); redrawInk(c.pg); }
+  else if (c.type === 'erase' && c.items.length) { c.pg.strokes = c.orig; queueInk(c.pg); }
+  queueBg();
+}
+function setZoom(z, fx, fy, cx, cy) {
+  S.zoom = z;
   layout();
+  if (z > 1) {
+    const r = book.getBoundingClientRect();
+    scroller.scrollLeft += (r.left + fx * r.width) - cx;
+    scroller.scrollTop += (r.top + fy * r.height) - cy;
+  } else { scroller.scrollLeft = 0; scroller.scrollTop = 0; }
+}
+scroller.addEventListener('pointerdown', e => {
+  if (e.pointerType !== 'touch' || S.view !== 'planner' || flipping) return;
+  touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (touches.size === 2) {
+    abortCur();
+    const st = pinchState(), r = book.getBoundingClientRect();
+    pinch = { d0: st.dist, z0: S.zoom, c0: st, last: st, ratio: 1, fx: (st.cx - r.left) / r.width, fy: (st.cy - r.top) / r.height };
+    book.style.transformOrigin = `${st.cx - r.left}px ${st.cy - r.top}px`;
+  }
+}, true);
+scroller.addEventListener('pointermove', e => {
+  if (!touches.has(e.pointerId)) return;
+  touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (!pinch || touches.size < 2) return;
+  e.preventDefault();
+  const st = pinchState();
+  pinch.ratio = clamp(pinch.z0 * st.dist / pinch.d0, 1, 4) / pinch.z0;
+  pinch.last = st;
+  book.style.transform = `translate(${st.cx - pinch.c0.cx}px, ${st.cy - pinch.c0.cy}px) scale(${pinch.ratio})`;
+});
+function endTouch(e) {
+  if (!touches.delete(e.pointerId)) return;
+  if (pinch && touches.size < 2) {
+    const p = pinch; pinch = null;
+    book.style.transform = ''; book.style.transformOrigin = '';
+    let z = clamp(p.z0 * p.ratio, 1, 4);
+    if (z < 1.06) z = 1;
+    setZoom(z, p.fx, p.fy, p.last.cx, p.last.cy);
+  }
+}
+scroller.addEventListener('pointerup', endTouch);
+scroller.addEventListener('pointercancel', endTouch);
+scroller.addEventListener('wheel', e => {
+  if (!e.ctrlKey || S.view !== 'planner') return;
+  e.preventDefault();
+  const r = book.getBoundingClientRect(), z = clamp(S.zoom * Math.exp(-e.deltaY * 0.01), 1, 4);
+  setZoom(z < 1.03 ? 1 : z, (e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height, e.clientX, e.clientY);
+}, { passive: false });
+// stop Safari's own page-pinch from fighting ours
+for (const t of ['gesturestart', 'gesturechange']) document.addEventListener(t, e => e.preventDefault());
+
+/* ───────────── Dropdown menu, tool options, full-screen ───────────── */
+const menu = $('menu'), optPanel = $('optPanel');
+function placeDrop(el, btn, align) {
+  el.hidden = false;
+  const r = btn.getBoundingClientRect(), w = el.offsetWidth;
+  el.style.top = (r.bottom + 6) + 'px';
+  el.style.left = clamp(align === 'right' ? r.right - w : r.left, 8, innerWidth - w - 8) + 'px';
+}
+function closeDrops() { menu.hidden = true; optPanel.hidden = true; }
+function toggleOpt() { const open = !optPanel.hidden; closeDrops(); if (!open) placeDrop(optPanel, $('optBtn'), 'right'); }
+$('menuBtn').onclick = () => {
+  const open = !menu.hidden; closeDrops();
+  if (open) return;
+  document.querySelectorAll('#menu [data-view]').forEach(b => b.classList.toggle('on', b.dataset.view === S.view));
+  $('fitBtn').hidden = S.zoom <= 1;
+  placeDrop(menu, $('menuBtn'), 'left');
 };
+$('optBtn').onclick = toggleOpt;
+menu.addEventListener('click', e => { if (e.target.closest('button')) closeDrops(); });
+$('jumpDate').addEventListener('change', closeDrops);
+$('fitBtn').onclick = () => setZoom(1, .5, .5, 0, 0);
+document.addEventListener('pointerdown', e => { if (!e.target.closest('#menu, #optPanel, #bar')) closeDrops(); });
+$('hideBar').onclick = () => { closeDrops(); $('bar').hidden = true; $('showBar').hidden = false; $('app').classList.add('immersive'); };
+$('showBar').onclick = () => { $('bar').hidden = false; $('showBar').hidden = true; $('app').classList.remove('immersive'); };
 
 /* ───────────── Week navigation + book flip ───────────── */
 async function loadInto(pg, ws) {
@@ -775,10 +860,10 @@ $('jumpDate').onchange = e => {
   e.target.value = '';
 };
 
-document.querySelectorAll('.tabs [data-view]').forEach(b => b.onclick = () => showView(b.dataset.view));
+document.querySelectorAll('#menu [data-view]').forEach(b => b.onclick = () => showView(b.dataset.view));
 function showView(v) {
   S.view = v;
-  document.querySelectorAll('.tabs [data-view]').forEach(b => b.classList.toggle('on', b.dataset.view === v));
+  $('bar').classList.toggle('no-tools', v !== 'planner');
   $('plannerView').hidden = v !== 'planner';
   $('monthView').hidden = v !== 'month';
   $('statsView').hidden = v !== 'stats';

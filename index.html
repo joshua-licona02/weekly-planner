@@ -15,40 +15,45 @@
 </head>
 <body>
 <div id="app">
-  <header class="topbar">
+  <header class="topbar" id="bar">
+    <button id="menuBtn" class="ib" aria-label="Menu">&#9776;</button>
     <div class="nav-group">
-      <button id="prevBtn" aria-label="Previous">&#8249;</button>
-      <button id="todayBtn">Today</button>
-      <button id="nextBtn" aria-label="Next">&#8250;</button>
-      <label class="jump" title="Jump to date">&#128197;<input id="jumpDate" type="date"></label>
+      <button id="prevBtn" class="ib" aria-label="Previous">&#8249;</button>
+      <button id="nextBtn" class="ib" aria-label="Next">&#8250;</button>
     </div>
     <div class="title">
       <div id="titleMain"></div>
       <div id="titleSub"></div>
     </div>
-    <nav class="tabs">
-      <button data-view="planner" class="on">Planner</button>
+    <div class="tools planner-only" id="tools">
+      <button data-tool="pen" class="ib on" aria-label="Pen"><span class="gl">&#9998;</span><span class="lbl">Pen</span></button>
+      <button data-tool="hl" class="ib" aria-label="Highlighter"><span class="gl">&#9646;</span><span class="lbl">Highlight</span></button>
+      <button data-tool="eraser" class="ib" aria-label="Eraser"><span class="gl">&#9003;</span><span class="lbl">Erase</span></button>
+      <button data-tool="event" class="ib" aria-label="Events"><span class="gl">&#9638;</span><span class="lbl">Events</span></button>
+    </div>
+    <button id="optBtn" class="ib planner-only" aria-label="Tool options"><i id="optDot"></i></button>
+    <div class="tools planner-only">
+      <button id="undoBtn" class="ib" aria-label="Undo">&#8630;</button>
+      <button id="redoBtn" class="ib" aria-label="Redo">&#8631;</button>
+    </div>
+    <button id="hideBar" class="ib" aria-label="Hide toolbar (full screen)">&#10530;</button>
+  </header>
+  <button id="showBar" hidden aria-label="Show toolbar">&#8964;</button>
+
+  <div id="menu" class="dropdown" hidden>
+    <div class="menu-views">
+      <button data-view="planner">Planner</button>
       <button data-view="month">Month</button>
       <button data-view="stats">Stats</button>
-      <button id="settingsBtn" aria-label="Settings">&#9881;</button>
-    </nav>
-  </header>
+    </div>
+    <button id="todayBtn" class="mi">Go to today</button>
+    <label class="mi jump">Jump to date&hellip;<input id="jumpDate" type="date"></label>
+    <button id="fitBtn" class="mi" hidden>Fit page (reset zoom)</button>
+    <button id="settingsBtn" class="mi">&#9881; Settings</button>
+  </div>
+  <div id="optPanel" class="dropdown" hidden><div class="ctx" id="ctx"></div></div>
 
   <section id="plannerView">
-    <div class="toolbar">
-      <div class="tools" id="tools">
-        <button data-tool="pen" class="on">&#9998; Pen</button>
-        <button data-tool="hl">&#9646; Highlighter</button>
-        <button data-tool="eraser">&#9003; Eraser</button>
-        <button data-tool="event">&#9638; Events</button>
-      </div>
-      <div class="ctx" id="ctx"></div>
-      <div class="tools right">
-        <button id="undoBtn" aria-label="Undo">&#8630;</button>
-        <button id="redoBtn" aria-label="Redo">&#8631;</button>
-        <button id="zoomBtn">1&times;</button>
-      </div>
-    </div>
     <div id="scroller">
       <div id="book">
         <div class="pg" id="pgL"><canvas></canvas><canvas></canvas><canvas class="live"></canvas></div>
