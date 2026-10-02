@@ -403,8 +403,7 @@ let cur = null, flipping = false;
    just lifted, touches are ignored (they cannot draw, pinch, swipe or tap), and if a
    palm landed first, the pen takes over the moment it touches. */
 let lastPenAt = 0, penSeen = false;
-const recentPen = () => performance.now() - lastPenAt < 700;
-const isPalm = e => e.pointerType === 'touch' && (Math.max(e.width || 0, e.height || 0) > 40);
+const recentPen = () => performance.now() - lastPenAt < 500;
 for (const t of ['pointerdown', 'pointermove', 'pointerup']) {
   document.addEventListener(t, e => { if (e.pointerType === 'pen') { lastPenAt = performance.now(); penSeen = true; } }, true);
 }
@@ -461,7 +460,8 @@ function onDown(e) {
   if (e.pointerType === 'pen') {
     if (pinch) cancelPinch();                  // a palm "pinch" must not hijack the pen
     if (cur && cur.touch) abortCur();          // pen wins over a resting palm
-  } else if (e.pointerType === 'touch' && (recentPen() || isPalm(e))) { e.preventDefault(); return; }
+  } else if (e.pointerType === 'touch' && recentPen()) { e.preventDefault(); return; }
+  if (cur && e.isPrimary && cur.pid !== e.pointerId && performance.now() - cur.last > 1000) { cur = null; S.preview = null; }
   if (pinch || cur) return;
   e.preventDefault();
   closePop(); closeDrops();
@@ -493,12 +493,13 @@ function onDown(e) {
       cur = { pid: e.pointerId, type: 'ecreate', pg, row, line0: tg.line, x0: e.clientX, y0: e.clientY, moved: false };
     }
   }
-  if (cur) cur.touch = isTouch;
+  if (cur) { cur.touch = isTouch; cur.last = performance.now(); }
 }
 
 function onMove(e) {
   if (!cur || e.pointerId !== cur.pid) return;
   e.preventDefault();
+  cur.last = performance.now();
 
   if (cur.type === 'nav') {
     if (S.zoom > 1) { scroller.scrollLeft = cur.sl - (e.clientX - cur.x0); scroller.scrollTop = cur.st - (e.clientY - cur.y0); }
@@ -691,7 +692,8 @@ function setZoom(z, fx, fy, cx, cy) {
   } else { scroller.scrollLeft = 0; scroller.scrollTop = 0; }
 }
 scroller.addEventListener('pointerdown', e => {
-  if (e.pointerType !== 'touch' || S.view !== 'planner' || flipping || recentPen() || isPalm(e)) return;
+  if (e.pointerType !== 'touch' || S.view !== 'planner' || flipping || recentPen()) return;
+  if (e.isPrimary) { touches.clear(); if (pinch) cancelPinch(); }
   touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (touches.size === 2) {
     abortCur();
@@ -1109,6 +1111,7 @@ function renderSettings() {
       <button id="clearInk" class="plain">Clear handwriting on the visible page${S.n === 2 ? 's' : ''}</button>
       <button id="exportData" class="plain">Export backup</button>
       <button id="importData" class="plain">Import backup</button>
+      <button id="dbgBtn" class="plain">Show / hide touch diagnostics</button>
     </div>
     <p class="note">${DB.persistent ? 'Everything is stored on this device. Export a backup now and then; browsers can clear site data.' : '<b>Storage is unavailable in this browser mode: nothing will be saved after you close it.</b>'}</p>
   </div>`;
@@ -1143,6 +1146,7 @@ $('settings').addEventListener('click', async e => {
   }
   if (t.id === 'exportData') return exportData();
   if (t.id === 'importData') return $('importFile').click();
+  if (t.id === 'dbgBtn') { dbgOn = !dbgOn; $('dbg').hidden = !dbgOn; $('settings').hidden = true; return; }
 });
 $('settings').addEventListener('change', e => {
   const t = e.target;
@@ -1195,6 +1199,15 @@ function toast(msg) {
   const t = $('toast'); t.textContent = msg; t.hidden = false;
   clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 3500);
 }
+
+/* ───────────── Touch diagnostics (Settings) ───────────── */
+let dbgOn = false;
+function dbgUpdate(e) {
+  if (!dbgOn) return;
+  $('dbg').textContent = `${e.type} ${e.pointerType} #${e.pointerId} ${Math.round(e.width || 0)}x${Math.round(e.height || 0)}px p=${(e.pressure || 0).toFixed(2)}\n` +
+    `recentPen=${recentPen()} penSeen=${penSeen} pinch=${!!pinch} touches=${touches.size} cur=${cur ? cur.type : '-'} zoom=${S.zoom.toFixed(2)}`;
+}
+for (const t of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) document.addEventListener(t, dbgUpdate, true);
 
 /* ───────────── Boot ───────────── */
 async function boot() {
