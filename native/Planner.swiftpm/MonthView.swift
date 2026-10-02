@@ -7,6 +7,7 @@ struct MonthView: View {
     @State private var pickMonth = 1
     @State private var pickYear = 2026
     @State private var selectedDay: DayPick?
+    @StateObject private var ink = MonthInk()
 
     private func shift(_ n: Int) {
         model.monthAnchor = Week.calendar.date(byAdding: .month, value: n, to: Week.monthStart(model.monthAnchor)) ?? model.monthAnchor
@@ -97,6 +98,7 @@ struct MonthView: View {
                 }
         )
         .sheet(isPresented: $picking) { monthPicker }
+        .onAppear { ink.reset() }
         .sheet(item: $selectedDay) { pick in
             DayCard(date: pick.date) { action in
                 selectedDay = nil
@@ -136,10 +138,15 @@ struct MonthView: View {
                 }
             }
             .background(Color(t.header))
-            ForEach(0..<weeks, id: \.self) { w in
-                MonthWeekRow(weekStart: Week.adding(w, to: gridStart), month: month, maxLanes: weeks > 5 ? 3 : 4,
-                             onDay: { selectedDay = DayPick(date: $0) })
+            VStack(spacing: 0) {
+                ForEach(0..<weeks, id: \.self) { w in
+                    MonthWeekRow(weekStart: Week.adding(w, to: gridStart), month: month, maxLanes: weeks > 5 ? 3 : 4,
+                                 ink: ink, onDay: { selectedDay = DayPick(date: $0) })
+                }
             }
+            // Pencil writing layer: what you write in a day box goes onto that day's planner row
+            .overlay(MonthInkCanvas(gridStart: gridStart, weeks: weeks, enabled: model.mode == .write,
+                                    dark: t.dark, ink: ink))
         }
         .foregroundStyle(Color(t.ink))
         .background(Color(t.paper))
@@ -166,6 +173,7 @@ private struct MonthWeekRow: View {
     let weekStart: Date
     let month: Int
     let maxLanes: Int
+    @ObservedObject var ink: MonthInk
     let onDay: (Date) -> Void
 
     var body: some View {
@@ -178,6 +186,9 @@ private struct MonthWeekRow: View {
                     ForEach(0..<7, id: \.self) { i in
                         dayCell(i, hidden: lay.hidden[i])
                             .frame(width: colW, height: geo.size.height)
+                            .overlay(alignment: .topLeading) {
+                                miniature(i, cellW: colW, cellH: geo.size.height)
+                            }
                     }
                 }
                 ForEach(lay.segs) { s in
@@ -215,6 +226,24 @@ private struct MonthWeekRow: View {
         .overlay(alignment: .trailing) { Rectangle().fill(Color(t.line)).frame(width: 1) }
         .contentShape(Rectangle())
         .onTapGesture { onDay(date) }
+    }
+
+    /// Your handwriting from that day's planner row, at month-box scale.
+    @ViewBuilder private func miniature(_ i: Int, cellW: CGFloat, cellH: CGFloat) -> some View {
+        let day = Week.day(i, of: weekStart)
+        let _ = ink.version
+        if let mini = ink.miniature(for: day, dark: model.theme.dark) {
+            let img = mini.0
+            let bounds = mini.1
+            let k = cellH / Page.dayH
+            Image(uiImage: img)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: min(bounds.width * k, cellW - 8), maxHeight: min(bounds.height * k, max(cellH - 34, 10)))
+                .padding(.leading, 4)
+                .padding(.top, 32)
+                .allowsHitTesting(false)
+        }
     }
 
     private func bar(_ s: MonthSeg) -> some View {

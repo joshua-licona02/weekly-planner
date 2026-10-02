@@ -59,7 +59,7 @@ struct ContentView: View {
                 titleButton
                 Spacer(minLength: 8)
                 screenPicker
-                if model.screen == .planner { modeSwitch }
+                if model.screen != .stats { modeSwitch }
                 actionButtons
             }
             VStack(spacing: 6) {
@@ -72,7 +72,7 @@ struct ContentView: View {
                 }
                 HStack(spacing: 12) {
                     screenPicker
-                    if model.screen == .planner { modeSwitch }
+                    if model.screen != .stats { modeSwitch }
                 }
             }
         }

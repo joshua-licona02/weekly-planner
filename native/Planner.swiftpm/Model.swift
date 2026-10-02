@@ -132,7 +132,10 @@ final class PlannerModel: ObservableObject {
     @Published var showTools: Bool = true
     @Published var fullScreen: Bool = false
     @Published var screen: Screen = .planner {
-        didSet { if screen == .month && oldValue != .month { monthAnchor = Week.day(3, of: weekStart) } }
+        didSet {
+            if screen != .planner { NotificationCenter.default.post(name: .plannerSaveAll, object: nil) }
+            if screen == .month && oldValue != .month { monthAnchor = Week.day(3, of: weekStart) }
+        }
     }
     @Published var mode: InputMode = .write
     @Published var currentCat: String = "work"

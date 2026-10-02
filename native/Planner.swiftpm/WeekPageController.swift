@@ -85,6 +85,8 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate, PKToolPi
                                                name: UIApplication.willResignActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(saveNow),
                                                name: .plannerSaveAll, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(inkChangedElsewhere(_:)),
+                                               name: .plannerInkChangedElsewhere, object: nil)
     }
 
     override func viewDidLayoutSubviews() {
@@ -296,6 +298,15 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate, PKToolPi
         let work = DispatchWorkItem { [weak self] in self?.saveNow() }
         saveWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
+    }
+
+    /// Month view wrote onto this week: show it.
+    @objc private func inkChangedElsewhere(_ n: Notification) {
+        guard (n.object as? String) == Week.key(week) else { return }
+        saveWork?.cancel()
+        canvas.drawing = InkStore.shared.load(week)
+        saveWork?.cancel()
+        dirty = false
     }
 
     @objc func saveNow() {
