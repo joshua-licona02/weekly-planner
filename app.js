@@ -147,7 +147,9 @@ const rgba = (hex, a) => {
   return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
 };
 
+let layoutPending = false;
 function layout() {
+  if (cur && cur.type === 'draw') { layoutPending = true; return Promise.resolve(); }   // finish the stroke first
   const aw = scroller.clientWidth - 12, ah = scroller.clientHeight - 12;
   const n = aw / ah >= 1.3 ? 2 : 1, changed = n !== S.n;
   S.n = n;
@@ -339,6 +341,7 @@ function redrawInk(pg) {
   pg.inkRaf = 0;
   pg.inkx.clearRect(0, 0, PW, PH);
   for (const s of pg.strokes) drawStroke(pg.inkx, s);
+  if (cur && cur.type === 'draw' && cur.pg === pg) drawStroke(pg.inkx, cur.s);   // keep the in-progress stroke visible
 }
 const queueInk = pg => { if (!pg.inkRaf) pg.inkRaf = requestAnimationFrame(() => redrawInk(pg)); };
 let bgRaf = 0;
@@ -401,9 +404,11 @@ let cur = null, flipping = false;
    just lifted, touches are ignored (they cannot draw, pinch, swipe or tap), and if a
    palm landed first, the pen takes over the moment it touches. */
 let lastPenAt = 0, penSeen = false;
-const recentPen = () => performance.now() - lastPenAt < 500;
+const dbgC = { down: 0, up: 0, cancel: 0, kept: 0 };
+const recentPen = () => performance.now() - lastPenAt < 2500;
 for (const t of ['pointerdown', 'pointermove', 'pointerup']) {
-  document.addEventListener(t, e => { if (e.pointerType === 'pen') { lastPenAt = performance.now(); penSeen = true; } }, true);
+  document.addEventListener(t, e => { if (e.pointerType === 'pen') { lastPenAt = performance.now(); penSeen = true; if (t === 'pointerdown') dbgC.down++; if (t === 'pointerup') dbgC.up++; } }, true);
+document.addEventListener('pointercancel', e => { if (e.pointerType === 'pen') dbgC.cancel++; }, true);
 }
 const pageOfEl = el => (el === pgL.el ? pgL : pgR);
 function toPage(e, pg) {
@@ -455,11 +460,13 @@ function hitEvent(pg, pt) {
 function onDown(e) {
   const pg = pageOfEl(e.currentTarget);
   if (flipping) return;
-  if (e.pointerType === 'pen') {
-    if (pinch) cancelPinch();                  // a palm "pinch" must not hijack the pen
-    if (cur && cur.touch) abortCur();          // pen wins over a resting palm
-  } else if (e.pointerType === 'touch' && recentPen()) { e.preventDefault(); return; }
-  if (cur && e.isPrimary && cur.pid !== e.pointerId && performance.now() - cur.last > 1000) { cur = null; S.preview = null; }
+  if (e.pointerType !== 'touch') {
+    // Pen / mouse always wins. Fast writing can deliver the next pen-down before the previous
+    // pen-up, so any unfinished stroke is finalized here instead of blocking the new one.
+    if (pinch) cancelPinch();
+    if (cur) { const c = cur; if (c.touch) abortCur(); else { onUp({ pointerId: c.pid, type: 'pointercancel', clientX: c.x0 || 0, clientY: c.y0 || 0 }); } }
+  } else if (recentPen()) { e.preventDefault(); return; }
+  else if (cur && e.isPrimary && cur.pid !== e.pointerId && performance.now() - cur.last > 1000) { cur = null; S.preview = null; }
   if (pinch || cur) return;
   e.preventDefault();
   closePop(); closeDrops();
@@ -556,7 +563,6 @@ function onUp(e) {
     if (S.zoom === 1 && !cancelled && !pinch && performance.now() - c.t0 < 800 && Math.abs(dx) > 110 && Math.abs(dx) > 2.5 * Math.abs(dy) && !recentPen()) flip(dx < 0 ? 1 : -1);
   } else if (c.type === 'draw') {
     const s = c.s, n = s.p.length, pg = c.pg;
-    if (cancelled && n < 2) return;
     pg.livex.clearRect(0, 0, PW, PH);
     if (s.t === 'h') drawHighlight(pg.inkx, s);
     else if (n === 1) drawDot(pg.inkx, s);
@@ -564,7 +570,9 @@ function onUp(e) {
     s.p = s.p.map(p => [Math.round(p[0] * 10) / 10, Math.round(p[1] * 10) / 10, Math.round(p[2] * 100) / 100]);
     pg.strokes.push(s);
     push({ k: 'stroke', pg, s });
+    dbgC.kept++;
     pageDirty(pg);
+    if (layoutPending) { layoutPending = false; layout(); }
   } else if (c.type === 'erase') {
     if (c.items.length) { push({ k: 'erase', pg: c.pg, items: c.items }); pageDirty(c.pg); }
   } else if (c.type === 'emove' || c.type === 'eresize') {
@@ -716,6 +724,14 @@ scroller.addEventListener('pointermove', e => {
   if (recentPen()) return cancelPinch();
   e.preventDefault();
   const st = pinchState();
+  if (!pinch.armed) {                                   // dead zone: resting-hand jitter never zooms
+    if (Math.abs(st.dist / pinch.d0 - 1) < 0.3) return;
+    const r = book.getBoundingClientRect();
+    pinch.armed = true; pinch.d0 = st.dist; pinch.c0 = st;
+    pinch.fx = (st.cx - r.left) / r.width; pinch.fy = (st.cy - r.top) / r.height;
+    book.style.transformOrigin = `${st.cx - r.left}px ${st.cy - r.top}px`;
+    return;
+  }
   pinch.ratio = clamp(pinch.z0 * st.dist / pinch.d0, 1, 4) / pinch.z0;
   pinch.last = st;
   book.style.transform = `translate(${st.cx - pinch.c0.cx}px, ${st.cy - pinch.c0.cy}px) scale(${pinch.ratio})`;
@@ -725,6 +741,7 @@ function endTouch(e) {
   if (pinch && touches.size < 2) {
     const p = pinch; pinch = null;
     book.style.transform = ''; book.style.transformOrigin = '';
+    if (!p.armed) return;
     let z = clamp(p.z0 * p.ratio, 1, 4);
     if (z < 1.06) z = 1;
     setZoom(z, p.fx, p.fy, p.last.cx, p.last.cy);
@@ -1213,7 +1230,7 @@ let dbgOn = false;
 function dbgUpdate(e) {
   if (!dbgOn) return;
   $('dbg').textContent = `${e.type} ${e.pointerType} #${e.pointerId} ${Math.round(e.width || 0)}x${Math.round(e.height || 0)}px p=${(e.pressure || 0).toFixed(2)} samples/event=${e.getCoalescedEvents ? e.getCoalescedEvents().length : 'n/a'}\n` +
-    `recentPen=${recentPen()} penSeen=${penSeen} pinch=${!!pinch} touches=${touches.size} cur=${cur ? cur.type : '-'} zoom=${S.zoom.toFixed(2)}`;
+    `recentPen=${recentPen()} penSeen=${penSeen} pinch=${!!pinch} touches=${touches.size} cur=${cur ? cur.type : '-'} zoom=${S.zoom.toFixed(2)}\npen: down=${dbgC.down} up=${dbgC.up} cancel=${dbgC.cancel} strokesKept=${dbgC.kept}`;
 }
 for (const t of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) document.addEventListener(t, dbgUpdate, true);
 
