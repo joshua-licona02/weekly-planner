@@ -33,11 +33,15 @@ final class BookController: UIViewController, UIPageViewControllerDataSource, UI
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.applyTheme() }
             .store(in: &bag)
-        model.$events
-            .combineLatest(model.$categories)
+        Publishers.CombineLatest4(model.$events, model.$categories, model.$showFederalHolidays, model.$showObservances)
             .dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.pages.forEach { $0.refreshEvents() } }
+            .store(in: &bag)
+        model.$extraLines
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.pages.forEach { $0.refreshLayout() } }
             .store(in: &bag)
         model.$mode
             .dropFirst()

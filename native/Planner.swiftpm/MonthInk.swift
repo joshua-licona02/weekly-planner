@@ -8,13 +8,8 @@ extension Notification.Name {
     static let plannerInkSaved = Notification.Name("plannerInkSaved")
 }
 
-/// The writing area of one day row on a weekly page, in page coordinates.
-func dayRowRect(_ index: Int) -> CGRect {
-    CGRect(x: Page.gx + Page.lab, y: Page.rowY(index), width: Page.right - (Page.gx + Page.lab), height: Page.dayH)
-}
-
-private func strokes(in d: PKDrawing, row: Int) -> [PKStroke] {
-    let rect = dayRowRect(row)
+private func strokes(in d: PKDrawing, row: Int, layout: WeekLayout) -> [PKStroke] {
+    let rect = layout.dayRect(row)
     return d.strokes.filter { rect.contains(CGPoint(x: $0.renderBounds.midX, y: $0.renderBounds.midY)) }
 }
 
@@ -54,7 +49,7 @@ final class MonthInk: ObservableObject {
     }
 
     /// Render miniatures for these weeks in the background; the view refreshes when they're ready.
-    func prepare(weeks: [Date], dark: Bool, scale: CGFloat) {
+    func prepare(weeks: [Date], layout: (Date) -> WeekLayout, dark: Bool, scale: CGFloat) {
         let mode = dark ? "|d" : "|l"
         let todo = weeks.filter { w in
             let k = Week.key(w) + mode
@@ -62,13 +57,14 @@ final class MonthInk: ObservableObject {
         }
         guard !todo.isEmpty else { return }
         todo.forEach { inFlight.insert(Week.key($0) + mode) }
+        let layouts = todo.map(layout)
 
         queue.async { [weak self] in
             var rendered: [String: (UIImage, CGRect)] = [:]
-            for week in todo {
+            for (week, lay) in zip(todo, layouts) {
                 let drawing = InkStore.shared.load(week)
                 for row in 0..<7 {
-                    let list = strokes(in: drawing, row: row)
+                    let list = strokes(in: drawing, row: row, layout: lay)
                     guard !list.isEmpty else { continue }
                     let bounds = list.reduce(CGRect.null) { $0.union($1.renderBounds) }.insetBy(dx: -4, dy: -4)
                     var image = UIImage()
@@ -93,16 +89,16 @@ final class MonthInk: ObservableObject {
 
     /// Strokes written over a day box (in box coordinates, box size `cellSize`) go into that
     /// day's row on the weekly page, scaled up, placed after anything already written there.
-    func add(_ newStrokes: [PKStroke], cellOrigin: CGPoint, cellSize: CGSize, day: Date, shift: inout CGFloat?) {
+    func add(_ newStrokes: [PKStroke], cellOrigin: CGPoint, cellSize: CGSize, day: Date, layout: WeekLayout, shift: inout CGFloat?) {
         let week = Week.start(of: day)
         let row = Week.days(from: week, to: day)
         var d = InkStore.shared.load(week)          // always fresh from disk
-        let rowRect = dayRowRect(row)
+        let rowRect = layout.dayRect(row)
         let x0 = EventLayout.writeX
         let s = Page.dayH / max(cellSize.height, 1)
 
         if shift == nil {
-            let rightmost = strokes(in: d, row: row).map { $0.renderBounds.maxX }.max() ?? 0
+            let rightmost = strokes(in: d, row: row, layout: layout).map { $0.renderBounds.maxX }.max() ?? 0
             var sh = rightmost > x0 ? rightmost - x0 + 24 : 0
             if x0 + sh + cellSize.width * s > rowRect.maxX { sh = 0 }   // no room left: write over the start
             shift = sh
@@ -127,6 +123,7 @@ struct MonthInkCanvas: UIViewRepresentable {
     let weeks: Int
     let dark: Bool
     let ink: MonthInk
+    let layout: (Date) -> WeekLayout       // week start -> where its day rows are
     let onTap: (CGPoint, CGSize) -> Void
     let onSwipe: (Int) -> Void
     let onCommitted: () -> Void
@@ -205,7 +202,8 @@ struct MonthInkCanvas: UIViewRepresentable {
                 let key = Week.key(day)
                 var shift: CGFloat? = shifts[key] ?? nil
                 p.ink.add(list, cellOrigin: CGPoint(x: CGFloat(col) * cellW, y: CGFloat(row) * cellH),
-                          cellSize: CGSize(width: cellW, height: cellH), day: day, shift: &shift)
+                          cellSize: CGSize(width: cellW, height: cellH), day: day,
+                          layout: p.layout(Week.start(of: day)), shift: &shift)
                 shifts[key] = shift
             }
             p.onCommitted()

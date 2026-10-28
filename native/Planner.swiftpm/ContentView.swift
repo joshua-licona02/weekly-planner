@@ -18,6 +18,7 @@ struct ContentView: View {
                     .opacity(model.screen == .planner ? 1 : 0)
                     .allowsHitTesting(model.screen == .planner)
                 if model.screen == .month { MonthView() }
+                if model.screen == .notes { NotesView().padding(6) }
                 if model.screen == .stats { StatsView() }
             }
         }
@@ -45,7 +46,15 @@ struct ContentView: View {
         .sheet(isPresented: $model.showSettings) {
             SettingsView().environmentObject(model)
         }
+        .alert("Planner", isPresented: Binding(get: { model.notice != nil }, set: { if !$0 { model.notice = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(model.notice ?? "")
+        }
     }
+
+    /// Planner and Month follow dates (and have Write / Events); Notes and Stats don't.
+    private var hasDates: Bool { model.screen == .planner || model.screen == .month }
 
     // MARK: top bar
     // One row when there's room (landscape); in portrait the view switch + Write/Events
@@ -59,7 +68,7 @@ struct ContentView: View {
                 titleButton
                 Spacer(minLength: 8)
                 screenPicker
-                if model.screen != .stats { modeSwitch }
+                if hasDates { modeSwitch }
                 actionButtons
             }
             VStack(spacing: 6) {
@@ -72,7 +81,7 @@ struct ContentView: View {
                 }
                 HStack(spacing: 12) {
                     screenPicker
-                    if model.screen != .stats { modeSwitch }
+                    if hasDates { modeSwitch }
                 }
             }
         }
@@ -102,7 +111,7 @@ struct ContentView: View {
                     Text(titleText).font(.headline)
                     if model.screen == .planner { Text(model.subtitle).font(.caption).opacity(0.8) }
                 }
-                if model.screen != .stats {
+                if hasDates {
                     Image(systemName: "chevron.down.circle.fill").font(.callout).opacity(0.8)
                 }
             }
@@ -112,7 +121,7 @@ struct ContentView: View {
         }
         .buttonStyle(BarButtonStyle())
         .fixedSize()
-        .disabled(model.screen == .stats)
+        .disabled(!hasDates)
         .accessibilityHint("Choose a date")
     }
 
@@ -121,7 +130,7 @@ struct ContentView: View {
             ForEach(Screen.allCases) { Text($0.rawValue).tag($0) }
         }
         .pickerStyle(.segmented)
-        .frame(width: 260)
+        .frame(width: 340)
         .environment(\.colorScheme, .dark)
     }
 
@@ -153,11 +162,13 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var actionButtons: some View {
-        if model.screen == .planner {
-            barButton("plus", "New event") { model.beginNewTyped() }
+        if model.screen == .planner || model.screen == .notes {
+            if model.screen == .planner {
+                barButton("plus", "New event") { model.beginNewTyped() }
+            }
             barButton("arrow.uturn.backward", "Undo") { model.commands.send(.undo) }
             barButton("arrow.uturn.forward", "Redo") { model.commands.send(.redo) }
-            if model.mode == .write {
+            if model.mode == .write || model.screen == .notes {
                 barButton(model.showTools ? "pencil.tip.crop.circle.fill" : "pencil.tip.crop.circle",
                           "Show or hide Apple Pencil tools") { model.showTools.toggle() }
             }
@@ -203,6 +214,7 @@ struct ContentView: View {
         switch model.screen {
         case .planner: return model.title
         case .month: return Week.monthYear(model.monthAnchor)
+        case .notes: return "Notes"
         case .stats: return "Where my time goes"
         }
     }
@@ -213,7 +225,7 @@ struct ContentView: View {
             model.commands.send(n > 0 ? .next : .previous)
         case .month:
             model.monthAnchor = Week.calendar.date(byAdding: .month, value: n, to: Week.monthStart(model.monthAnchor)) ?? model.monthAnchor
-        case .stats:
+        case .notes, .stats:
             break
         }
     }

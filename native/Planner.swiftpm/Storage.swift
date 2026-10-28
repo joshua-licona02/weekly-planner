@@ -117,6 +117,7 @@ final class Storage {
                 n = String(n.dropFirst().dropLast(".icloud".count))
             }
             let ours = (n.hasPrefix("ink-") && n.hasSuffix(".drawing")) || n == "events.json" || n == "categories.json"
+                || n == NotesStore.fileName || n == DayLines.fileName
             return ours ? n : nil
         }
     }
@@ -149,5 +150,44 @@ final class InkStore {
             Storage.shared.write(drawing.dataRepresentation(), name(week))
         }
         NotificationCenter.default.post(name: .plannerInkSaved, object: Week.key(week))
+    }
+
+    /// A day on this week gained or lost lines: move the handwriting so every stroke stays on its day.
+    func relayout(week: Date, from old: WeekLayout, to new: WeekLayout) {
+        guard old != new else { return }
+        var d = load(week)
+        guard !d.strokes.isEmpty else { return }
+        d.strokes = d.strokes.map { s in
+            let dy = new.offset(forY: s.renderBounds.midY, from: old)
+            guard dy != 0 else { return s }
+            var moved = s
+            moved.transform = s.transform.concatenating(CGAffineTransform(translationX: 0, y: dy))
+            return moved
+        }
+        save(d, week: week)
+    }
+}
+
+/// Lines added to days with their + button (day key -> extra lines), in one file.
+enum DayLines {
+    static let fileName = "day-lines.json"
+}
+
+/// The Notes page: one PencilKit drawing.
+enum NotesStore {
+    static let fileName = "notes.drawing"
+
+    static func load() -> PKDrawing {
+        guard let data = Storage.shared.read(fileName),
+              let drawing = try? PKDrawing(data: data) else { return PKDrawing() }
+        return drawing
+    }
+
+    static func save(_ drawing: PKDrawing) {
+        if drawing.strokes.isEmpty {
+            Storage.shared.remove(fileName)
+        } else {
+            Storage.shared.write(drawing.dataRepresentation(), fileName)
+        }
     }
 }

@@ -8,8 +8,9 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate, PKToolPi
     private weak var model: PlannerModel?
     private let toolPicker: PKToolPicker
 
-    private let paper = PaperView(frame: CGRect(x: 0, y: 0, width: Page.width, height: Page.height))
-    private let overlay = UIView(frame: CGRect(x: 0, y: 0, width: Page.width, height: Page.height))
+    private var layout: WeekLayout
+    private let paper = PaperView(frame: CGRect(x: 0, y: 0, width: Page.width, height: WeekLayout.standard.height))
+    private let overlay = UIView(frame: CGRect(x: 0, y: 0, width: Page.width, height: WeekLayout.standard.height))
     let canvas = PKCanvasView()
     private var saveWork: DispatchWorkItem?
     private var fitScale: CGFloat = 0
@@ -31,6 +32,7 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate, PKToolPi
         self.week = week
         self.model = model
         self.toolPicker = toolPicker
+        self.layout = model.layout(for: week)
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -42,6 +44,9 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate, PKToolPi
         view.clipsToBounds = true
 
         paper.week = week
+        paper.layout = layout
+        paper.frame.size.height = layout.height
+        overlay.frame.size.height = layout.height
         view.addSubview(paper)
 
         canvas.frame = view.bounds
@@ -73,6 +78,11 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate, PKToolPi
         hold.minimumPressDuration = 0.45
         view.addGestureRecognizer(hold)
 
+        // In Write mode: tap a day's + / − with your finger to add or remove a writing line.
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleFingerTap(_:)))
+        tap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        view.addGestureRecognizer(tap)
+
         toolPicker.addObserver(canvas)
         toolPicker.addObserver(self)
         if let m = model {
@@ -93,13 +103,13 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate, PKToolPi
         super.viewDidLayoutSubviews()
         let b = view.bounds.size
         guard b.width > 0, b.height > 0 else { return }
-        let fit = min(b.width / Page.width, max(b.height - obscuredBottom, 100) / Page.height)
+        let fit = min(b.width / Page.width, max(b.height - obscuredBottom, 100) / layout.height)
         if abs(fit - fitScale) > 0.0001 {
             fitScale = fit
             canvas.minimumZoomScale = fit
             canvas.maximumZoomScale = fit * 4
             canvas.zoomScale = fit
-            canvas.contentSize = CGSize(width: Page.width * fit, height: Page.height * fit)
+            canvas.contentSize = CGSize(width: Page.width * fit, height: layout.height * fit)
         }
         centerContent()
     }
@@ -131,6 +141,19 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate, PKToolPi
         guard let m = model else { return }
         paper.categories = m.categories
         paper.events = m.events
+        paper.holidays = (0..<7).map { m.holidays(on: Week.day($0, of: week)) }
+    }
+
+    /// A day on this page gained or lost a line: resize the page and fit it to the screen again.
+    func refreshLayout() {
+        guard let m = model else { return }
+        let l = m.layout(for: week)
+        guard l != layout else { return }
+        layout = l
+        paper.layout = l
+        for v in [paper, overlay] { v.bounds = CGRect(x: 0, y: 0, width: Page.width, height: l.height) }
+        fitScale = 0
+        view.setNeedsLayout()
     }
 
     func setMode(_ mode: InputMode) {
@@ -166,7 +189,7 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate, PKToolPi
 
     private func centerContent() {
         let z = canvas.zoomScale
-        let w = Page.width * z, h = Page.height * z
+        let w = Page.width * z, h = layout.height * z
         let ix = max(0, (canvas.bounds.width - w) / 2)
         let iy = max(0, (canvas.bounds.height - obscuredBottom - h) / 2)
         canvas.contentInset = UIEdgeInsets(top: iy, left: ix, bottom: iy + obscuredBottom, right: ix)
@@ -176,7 +199,7 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate, PKToolPi
     private func syncLayers() {
         let z = canvas.zoomScale
         let center = CGPoint(x: -canvas.contentOffset.x + Page.width * z / 2,
-                             y: -canvas.contentOffset.y + Page.height * z / 2)
+                             y: -canvas.contentOffset.y + layout.height * z / 2)
         for v in [paper, overlay] {
             v.transform = CGAffineTransform(scaleX: z, y: z)
             v.center = center
@@ -184,7 +207,7 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate, PKToolPi
     }
 
     func scrollViewDidZoom(_ scrollView: UIScrollView) {
-        canvas.contentSize = CGSize(width: Page.width * canvas.zoomScale, height: Page.height * canvas.zoomScale)
+        canvas.contentSize = CGSize(width: Page.width * canvas.zoomScale, height: layout.height * canvas.zoomScale)
         centerContent()
         let zoomed = canvas.zoomScale > canvas.minimumZoomScale * 1.02
         canvas.isScrollEnabled = zoomed
@@ -205,17 +228,47 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate, PKToolPi
     private struct Slot { let row: Int; let line: Int }
 
     private func slot(_ p: CGPoint, clamp: Bool) -> Slot? {
-        var row = Int(floor((p.y - Page.gy) / Page.dayH))
+        var row = layout.row(at: p.y)
         if !clamp && (row < 0 || row > 6) { return nil }
         row = min(max(row, 0), 6)
-        let line = min(max(Int(floor((p.y - Page.rowY(row)) / Page.lineH)), 0), Page.lines - 1)
-        return Slot(row: row, line: line)
+        return Slot(row: row, line: line(at: p.y, row: row))
+    }
+
+    private func line(at y: CGFloat, row: Int) -> Int {
+        min(max(Int(floor((y - layout.rowY(row)) / Page.lineH)), 0), layout.lines[row] - 1)
+    }
+
+    private func geometry(_ m: PlannerModel) -> [EventGeo] {
+        EventLayout.geometry(week: week, layout: layout, events: m.events)
+    }
+
+    /// A finger tap on a day's + or − button.
+    private func tapLineButton(at p: CGPoint) -> Bool {
+        guard let m = model else { return false }
+        for i in 0..<7 {
+            let day = Week.day(i, of: week)
+            if layout.canAdd(i) && layout.addRect(i).insetBy(dx: -8, dy: -8).contains(p) {
+                m.addLine(day)
+                return true
+            }
+            if layout.canRemove(i) && layout.removeRect(i).insetBy(dx: -4, dy: -8).contains(p) {
+                m.removeLine(day)
+                return true
+            }
+        }
+        return false
+    }
+
+    @objc private func handleFingerTap(_ g: UITapGestureRecognizer) {
+        guard let m = model, m.mode == .write else { return }     // Events mode: handleTap does it
+        _ = tapLineButton(at: g.location(in: overlay))
     }
 
     @objc private func handleTap(_ g: UITapGestureRecognizer) {
         guard let m = model else { return }
         let p = g.location(in: overlay)
-        if let hit = EventLayout.hit(p, in: EventLayout.geometry(week: week, events: m.events)) {
+        if tapLineButton(at: p) { return }
+        if let hit = EventLayout.hit(p, in: geometry(m)) {
             m.beginEdit(hit.geo.event)
             return
         }
@@ -226,7 +279,7 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate, PKToolPi
     @objc private func handleHold(_ g: UILongPressGestureRecognizer) {
         guard g.state == .began, let m = model, m.mode == .write else { return }
         let p = g.location(in: overlay)
-        if let hit = EventLayout.hit(p, in: EventLayout.geometry(week: week, events: m.events)) {
+        if let hit = EventLayout.hit(p, in: geometry(m)) {
             m.beginEdit(hit.geo.event)
             return
         }
@@ -239,7 +292,7 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate, PKToolPi
         let p = g.location(in: overlay)
         switch g.state {
         case .began:
-            if let hit = EventLayout.hit(p, in: EventLayout.geometry(week: week, events: m.events)) {
+            if let hit = EventLayout.hit(p, in: geometry(m)) {
                 if hit.grip {
                     drag = .resize(hit.geo.event)
                 } else if let s = slot(p, clamp: true) {
@@ -257,14 +310,14 @@ final class WeekPageController: UIViewController, PKCanvasViewDelegate, PKToolPi
             case .move(let e, let grabDay, let grabLine):
                 var n = e
                 n.date = Week.key(Week.day(s.row - grabDay, of: week))
-                n.line = min(max(s.line - grabLine, 0), Page.lines - n.lines)
+                n.line = max(0, min(s.line - grabLine, layout.lines[s.row] - n.lines))
                 paper.preview = n
             case .resize(let e):
                 var n = e
                 n.days = min(max(Week.days(from: e.start, to: Week.day(s.row, of: week)) + 1, 1), 60)
                 paper.preview = n
             case .create(let row, let line0):
-                let l1 = min(max(Int(floor((p.y - Page.rowY(row)) / Page.lineH)), 0), Page.lines - 1)
+                let l1 = line(at: p.y, row: row)
                 let a = min(line0, l1), b = max(line0, l1)
                 paper.preview = PlannerEvent(id: "draft", date: Week.key(Week.day(row, of: week)),
                                              line: a, lines: b - a + 1, cat: m.currentCat)

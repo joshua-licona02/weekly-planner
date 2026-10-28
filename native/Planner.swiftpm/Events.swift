@@ -170,7 +170,7 @@ enum EventLayout {
     static let laneW: CGFloat = 14
     static var writeX: CGFloat { Page.gx + Page.lab + CGFloat(lanes) * laneW + 6 }
 
-    static func geometry(week: Date, events: [PlannerEvent], preview: PlannerEvent? = nil) -> [EventGeo] {
+    static func geometry(week: Date, layout: WeekLayout, events: [PlannerEvent], preview: PlannerEvent? = nil) -> [EventGeo] {
         var all = expandEvents(events, from: week, to: Week.day(6, of: week))
         if let p = preview {
             if let i = all.firstIndex(where: { $0.id == p.id }) { all[i] = p } else { all.append(p) }
@@ -191,14 +191,16 @@ enum EventLayout {
             laneEnd[lane] = max(laneEnd[lane], ei)
             let startsHere = off >= 0
             let endsHere = off + e.days - 1 <= 6
-            let lineTop = CGFloat(e.line) * Page.lineH
-            let top = startsHere ? Page.rowY(si) + lineTop + 3 : Page.rowY(0)
-            let bottom = endsHere ? Page.rowY(ei) + CGFloat(e.line + e.lines) * Page.lineH - 3 : Page.rowY(6) + Page.dayH
+            // same line on every day it covers (moved up if a day has fewer lines)
+            func lineTop(_ d: Int) -> CGFloat { CGFloat(max(0, min(e.line, layout.lines[d] - e.lines))) * Page.lineH }
+            let height = CGFloat(e.lines) * Page.lineH
+            let top = startsHere ? layout.rowY(si) + lineTop(si) + 3 : layout.rowY(0)
+            let bottom = endsHere ? layout.rowY(ei) + lineTop(ei) + height - 3 : layout.rowY(7)
             let lx = Page.gx + Page.lab + CGFloat(lane) * laneW + 2
             let lw = laneW - 4
             var bands: [CGRect] = []
             for d in si...ei {
-                bands.append(CGRect(x: writeX, y: Page.rowY(d) + lineTop, width: Page.right - writeX, height: CGFloat(e.lines) * Page.lineH))
+                bands.append(CGRect(x: writeX, y: layout.rowY(d) + lineTop(d), width: Page.right - writeX, height: height))
             }
             out.append(EventGeo(event: e,
                                 lane: CGRect(x: lx, y: top, width: lw, height: max(bottom - top, 10)),
