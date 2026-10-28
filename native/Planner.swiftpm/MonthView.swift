@@ -138,7 +138,7 @@ struct MonthView: View {
 
     private func prepareInk() {
         guard showInk else { return }
-        ink.prepare(weeks: gridWeeks, dark: model.theme.dark, scale: UIScreen.main.scale * 0.8)
+        ink.prepare(weeks: gridWeeks, layout: model.layout(for:), dark: model.theme.dark, scale: UIScreen.main.scale * 0.8)
     }
 
     /// A finger tap that landed on the writing layer: open the event bar or day that's under it.
@@ -191,6 +191,7 @@ struct MonthView: View {
             .overlay {
                 if showInk && model.mode == .write {
                     MonthInkCanvas(gridStart: gridStart, weeks: weeks, dark: t.dark, ink: ink,
+                                   layout: model.layout(for:),
                                    onTap: { p, size in tapThrough(p, size, gridStart: gridStart, weeks: weeks, maxLanes: weeks > 5 ? 3 : 4) },
                                    onSwipe: { n in withAnimation { shift(n) } },
                                    onCommitted: { prepareInk() })
@@ -259,12 +260,21 @@ private struct MonthWeekRow: View {
         let inMonth = cal.component(.month, from: date) == month
         let isToday = cal.isDateInToday(date)
         let t = model.theme
+        let holidays = model.holidays(on: date)
         return VStack(alignment: .leading, spacing: 0) {
-            Text("\(cal.component(.day, from: date))")
-                .font(.system(size: 16, weight: .bold, design: .serif))
-                .frame(width: 28, height: 28)
-                .background(isToday ? Color(t.accent) : Color.clear, in: Circle())
-                .foregroundStyle(isToday ? Color.white : Color(t.ink).opacity(inMonth ? 1 : 0.4))
+            HStack(spacing: 4) {
+                Text("\(cal.component(.day, from: date))")
+                    .font(.system(size: 16, weight: .bold, design: .serif))
+                    .frame(width: 28, height: 28)
+                    .background(isToday ? Color(t.accent) : Color.clear, in: Circle())
+                    .foregroundStyle(isToday ? Color.white : Color(t.ink).opacity(inMonth ? 1 : 0.4))
+                if !holidays.isEmpty {
+                    Text(holidays.map(\.name).joined(separator: " · "))
+                        .font(.caption2.weight(.semibold))
+                        .lineLimit(1)
+                        .foregroundStyle(Color(holidays.contains { $0.federal } ? t.accent : t.muted).opacity(inMonth ? 1 : 0.5))
+                }
+            }
             Spacer(minLength: 0)
             if hidden > 0 {
                 Text("+\(hidden) more").font(.caption2).foregroundStyle(Color(t.muted))
@@ -356,8 +366,17 @@ struct DayCard: View {
     var body: some View {
         let dayEvents = expandEvents(model.events, from: date, to: date)
             .sorted { ($0.startMin ?? -1, $0.title) < ($1.startMin ?? -1, $1.title) }
+        let holidays = model.holidays(on: date)
         NavigationStack {
             List {
+                if !holidays.isEmpty {
+                    Section {
+                        ForEach(holidays, id: \.self) { h in
+                            Label(h.name, systemImage: h.federal ? "flag.fill" : "star.fill")
+                                .foregroundStyle(h.federal ? Color(model.theme.accent) : Color.secondary)
+                        }
+                    }
+                }
                 Section {
                     if dayEvents.isEmpty {
                         Text("Nothing planned yet.").foregroundStyle(.secondary)

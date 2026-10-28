@@ -1,9 +1,12 @@
 import UIKit
 
 /// Draws the printed planner page (header, day rows, light writing lines, dark borders, events)
-/// in logical 1000 x 1400 page coordinates. The PencilKit canvas sits on top of it.
+/// in logical page coordinates (1000 wide; 1400 tall until days get extra lines).
+/// The PencilKit canvas sits on top of it.
 final class PaperView: UIView {
     var week: Date = Week.start(of: Date()) { didSet { setNeedsDisplay() } }
+    var layout = WeekLayout.standard { didSet { setNeedsDisplay() } }
+    var holidays: [[Holiday]] = Array(repeating: [], count: 7) { didSet { setNeedsDisplay() } }
     var theme: PaperTheme = PaperTheme.all[0] { didSet { setNeedsDisplay() } }
     var events: [PlannerEvent] = [] { didSet { setNeedsDisplay() } }
     var categories: [EventCategory] = EventCategory.defaults { didSet { setNeedsDisplay() } }
@@ -60,8 +63,9 @@ final class PaperView: UIView {
         let cal = Week.calendar
         let today = cal.startOfDay(for: Date())
 
+        let lay = layout
         t.paper.setFill()
-        ctx.fill(CGRect(x: 0, y: 0, width: Page.width, height: Page.height))
+        ctx.fill(CGRect(x: 0, y: 0, width: Page.width, height: lay.height))
 
         // header
         text(Week.title(week), CGPoint(x: Page.gx, y: 22), t.font(44, bold: true), t.ink)
@@ -70,16 +74,17 @@ final class PaperView: UIView {
         let onAccent: UIColor = t.dark ? UIColor(hex: 0x0b0c0e) : .white
 
         for i in 0..<7 {
-            let y = Page.rowY(i)
+            let y = lay.rowY(i)
+            let h = lay.rowH(i)
             let day = Week.day(i, of: week)
             let isToday = cal.isDate(day, inSameDayAs: today)
             let weekday = cal.component(.weekday, from: day)
 
             (isToday ? t.accent : t.header).setFill()
-            ctx.fill(CGRect(x: Page.gx, y: y, width: Page.lab, height: Page.dayH))
+            ctx.fill(CGRect(x: Page.gx, y: y, width: Page.lab, height: h))
             if weekday == 1 || weekday == 7 {
                 (t.dark ? UIColor.white : UIColor.black).withAlphaComponent(0.03).setFill()
-                ctx.fill(CGRect(x: EventLayout.writeX, y: y, width: Page.right - EventLayout.writeX, height: Page.dayH))
+                ctx.fill(CGRect(x: EventLayout.writeX, y: y, width: Page.right - EventLayout.writeX, height: h))
             }
             let labelColor = isToday ? onAccent : t.ink
             text(Week.weekday(day).uppercased(), CGPoint(x: Page.gx + 14, y: y + 12), t.font(17, bold: true), labelColor)
@@ -90,16 +95,18 @@ final class PaperView: UIView {
 
             ctx.setStrokeColor(t.line.cgColor)
             ctx.setLineWidth(1.4)
-            for l in 1..<Page.lines {
+            for l in 1..<lay.lines[i] {
                 let ly = y + CGFloat(l) * Page.lineH
                 line(ctx, CGPoint(x: Page.gx + Page.lab, y: ly), CGPoint(x: Page.right, y: ly))
             }
-            line(ctx, CGPoint(x: EventLayout.writeX - 3, y: y), CGPoint(x: EventLayout.writeX - 3, y: y + Page.dayH))
+            line(ctx, CGPoint(x: EventLayout.writeX - 3, y: y), CGPoint(x: EventLayout.writeX - 3, y: y + h))
             ctx.strokePath()
+
+            drawLineButtons(ctx, row: i, color: labelColor)
         }
 
         // notes box
-        let ny = Page.rowY(7)
+        let ny = lay.notesY
         t.header.setFill()
         ctx.fill(CGRect(x: Page.gx, y: ny, width: Page.gw, height: 30))
         text("NOTES", CGPoint(x: Page.gx + 14, y: ny + 6), t.font(16, bold: true), t.ink)
@@ -113,21 +120,51 @@ final class PaperView: UIView {
         ctx.strokePath()
 
         drawEvents(ctx)
+        drawHolidays()
 
         // dark borders
         ctx.setStrokeColor(t.border.cgColor)
         ctx.setLineWidth(2)
-        for i in 1...7 { line(ctx, CGPoint(x: Page.gx, y: Page.rowY(i)), CGPoint(x: Page.right, y: Page.rowY(i))) }
+        for i in 1...7 { line(ctx, CGPoint(x: Page.gx, y: lay.rowY(i)), CGPoint(x: Page.right, y: lay.rowY(i))) }
         line(ctx, CGPoint(x: Page.gx, y: ny + 30), CGPoint(x: Page.right, y: ny + 30))
         line(ctx, CGPoint(x: Page.gx + Page.lab, y: Page.gy), CGPoint(x: Page.gx + Page.lab, y: ny))
         ctx.strokePath()
         ctx.setLineWidth(4)
-        ctx.stroke(CGRect(x: Page.gx, y: Page.gy, width: Page.gw, height: 7 * Page.dayH + Page.notesH))
+        ctx.stroke(CGRect(x: Page.gx, y: Page.gy, width: Page.gw, height: ny - Page.gy + Page.notesH))
+    }
+
+    /// The round + (add a line) and − (remove an added line) buttons in a day's label column.
+    private func drawLineButtons(_ ctx: CGContext, row i: Int, color: UIColor) {
+        let c = color.withAlphaComponent(0.55)
+        ctx.setStrokeColor(c.cgColor)
+        ctx.setLineWidth(1.6)
+        var buttons: [(CGRect, Bool)] = []
+        if layout.canAdd(i) { buttons.append((layout.addRect(i), true)) }
+        if layout.canRemove(i) { buttons.append((layout.removeRect(i), false)) }
+        for (r, plus) in buttons {
+            ctx.strokeEllipse(in: r.insetBy(dx: 1, dy: 1))
+            let m = CGPoint(x: r.midX, y: r.midY)
+            line(ctx, CGPoint(x: m.x - 7, y: m.y), CGPoint(x: m.x + 7, y: m.y))
+            if plus { line(ctx, CGPoint(x: m.x, y: m.y - 7), CGPoint(x: m.x, y: m.y + 7)) }
+        }
+        ctx.strokePath()
+    }
+
+    /// Holiday names in the top-right corner of their day.
+    private func drawHolidays() {
+        let t = theme
+        for i in 0..<7 where !holidays[i].isEmpty {
+            let list = holidays[i]
+            let names = list.map(\.name).joined(separator: " · ")
+            let x = EventLayout.writeX + 8
+            text(names, in: CGRect(x: x, y: layout.rowY(i) + 8, width: Page.right - 10 - x, height: 20),
+                 t.font(15, bold: true), list.contains { $0.federal } ? t.accent : t.muted, alignRight: true)
+        }
     }
 
     private func drawEvents(_ ctx: CGContext) {
         let t = theme
-        for g in EventLayout.geometry(week: week, events: events, preview: preview) {
+        for g in EventLayout.geometry(week: week, layout: layout, events: events, preview: preview) {
             let col = color(g.event.cat)
             for (i, b) in g.bands.enumerated() {
                 let first = i == 0 && g.startsHere

@@ -117,6 +117,8 @@ final class Storage {
                 n = String(n.dropFirst().dropLast(".icloud".count))
             }
             let ours = (n.hasPrefix("ink-") && n.hasSuffix(".drawing")) || n == "events.json" || n == "categories.json"
+                || (n.hasPrefix("note-") && n.hasSuffix(".drawing")) || n == NotesStore.indexName
+                || n == NotesStore.legacyName || n == DayLines.fileName
             return ours ? n : nil
         }
     }
@@ -149,5 +151,68 @@ final class InkStore {
             Storage.shared.write(drawing.dataRepresentation(), name(week))
         }
         NotificationCenter.default.post(name: .plannerInkSaved, object: Week.key(week))
+    }
+
+    /// A day on this week gained or lost lines: move the handwriting so every stroke stays on its day.
+    func relayout(week: Date, from old: WeekLayout, to new: WeekLayout) {
+        guard old != new else { return }
+        var d = load(week)
+        guard !d.strokes.isEmpty else { return }
+        d.strokes = d.strokes.map { s in
+            let dy = new.offset(forY: s.renderBounds.midY, from: old)
+            guard dy != 0 else { return s }
+            var moved = s
+            moved.transform = s.transform.concatenating(CGAffineTransform(translationX: 0, y: dy))
+            return moved
+        }
+        save(d, week: week)
+    }
+}
+
+/// Lines added to days with their + button (day key -> extra lines), in one file.
+enum DayLines {
+    static let fileName = "day-lines.json"
+}
+
+/// One note in the Notes tab (its handwriting is in "note-<id>.drawing").
+struct NoteInfo: Codable, Identifiable, Equatable {
+    var id: String = UUID().uuidString
+    var title: String
+    var created = Date()
+    var modified = Date()
+}
+
+/// The Notes tab: a list of notes ("notes.json") and one PencilKit drawing per note.
+enum NotesStore {
+    static let indexName = "notes.json"
+    static let legacyName = "notes.drawing"     // the single Notes page from the first version
+
+    static func fileName(_ id: String) -> String { "note-\(id).drawing" }
+
+    static func load(_ id: String) -> PKDrawing {
+        guard let data = Storage.shared.read(fileName(id)),
+              let drawing = try? PKDrawing(data: data) else { return PKDrawing() }
+        return drawing
+    }
+
+    static func save(_ drawing: PKDrawing, id: String) {
+        if drawing.strokes.isEmpty {
+            Storage.shared.remove(fileName(id))
+        } else {
+            Storage.shared.write(drawing.dataRepresentation(), fileName(id))
+        }
+    }
+
+    static func remove(_ id: String) { Storage.shared.remove(fileName(id)) }
+
+    /// The list of notes, newest first. The old single Notes page becomes the first note.
+    static func loadIndex() -> [NoteInfo] {
+        if let list = Storage.shared.readJSON([NoteInfo].self, indexName) { return list }
+        guard let legacy = Storage.shared.read(legacyName) else { return [] }
+        let note = NoteInfo(title: "Notes")
+        Storage.shared.write(legacy, fileName(note.id))
+        Storage.shared.writeJSON([note], indexName)
+        Storage.shared.remove(legacyName)
+        return [note]
     }
 }

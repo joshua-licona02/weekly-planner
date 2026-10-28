@@ -32,6 +32,15 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Toggle("US federal holidays", isOn: $model.showFederalHolidays)
+                    Toggle("Popular observances", isOn: $model.showObservances)
+                } header: {
+                    Text("Holidays")
+                } footer: {
+                    Text("Shown on the planner pages and in Month view. Observances include Valentine's Day, Easter, Mother's and Father's Day, Halloween and Christmas Eve. Worked out on this iPad; nothing is downloaded.")
+                }
+
+                Section {
                     ForEach($model.categories) { $c in
                         HStack {
                             ColorPicker("", selection: colorBinding($c), supportsOpacity: false)

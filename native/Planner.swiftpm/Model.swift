@@ -6,17 +6,54 @@ import PencilKit
 
 enum Page {
     static let width: CGFloat = 1000
-    static let height: CGFloat = 1400
     static let gx: CGFloat = 36          // grid left
     static let gy: CGFloat = 104         // grid top
     static let gw: CGFloat = 928         // grid width
-    static let dayH: CGFloat = 160       // one day row
+    static let dayH: CGFloat = 160       // one day row (before any added lines)
     static let notesH: CGFloat = 140
-    static let lines = 4                 // writing lines per day
+    static let lines = 4                 // writing lines per day (before any added lines)
+    static let maxExtraLines = 12        // most lines the + button can add to one day
     static let lab: CGFloat = 104        // day label column
     static var lineH: CGFloat { dayH / CGFloat(lines) }
     static var right: CGFloat { gx + gw }
-    static func rowY(_ i: Int) -> CGFloat { gy + CGFloat(i) * dayH }
+}
+
+/// Where the day rows sit on one week's page. Days can have extra lines (the + button),
+/// which makes that row taller and pushes everything below it down.
+struct WeekLayout: Equatable {
+    var lines: [Int]                     // writing lines for each of the 7 days
+
+    static let standard = WeekLayout(lines: Array(repeating: Page.lines, count: 7))
+
+    func rowH(_ i: Int) -> CGFloat { CGFloat(lines[i]) * Page.lineH }
+    /// Top of day row i (i = 7 is the notes box).
+    func rowY(_ i: Int) -> CGFloat { Page.gy + (0..<min(max(i, 0), 7)).reduce(CGFloat(0)) { $0 + rowH($1) } }
+    var notesY: CGFloat { rowY(7) }
+    var height: CGFloat { notesY + Page.notesH + 36 }
+
+    /// The day row containing y: -1 above the grid, 7 in/below the notes box.
+    func row(at y: CGFloat) -> Int {
+        if y < Page.gy { return -1 }
+        return (0..<7).first { y < rowY($0 + 1) } ?? 7
+    }
+
+    /// The writing area of one day row.
+    func dayRect(_ i: Int) -> CGRect {
+        CGRect(x: Page.gx + Page.lab, y: rowY(i), width: Page.right - (Page.gx + Page.lab), height: rowH(i))
+    }
+
+    /// The + / − buttons at the bottom of a day's label column.
+    func addRect(_ i: Int) -> CGRect { CGRect(x: Page.gx + 10, y: rowY(i) + rowH(i) - 34, width: 28, height: 28) }
+    func removeRect(_ i: Int) -> CGRect { addRect(i).offsetBy(dx: 36, dy: 0) }
+    func canAdd(_ i: Int) -> Bool { lines[i] < Page.lines + Page.maxExtraLines }
+    func canRemove(_ i: Int) -> Bool { lines[i] > Page.lines }
+
+    /// How far ink at height y (laid out with `old`) moves to stay on the same day in this layout.
+    func offset(forY y: CGFloat, from old: WeekLayout) -> CGFloat {
+        let r = old.row(at: y)
+        if r < 0 { return 0 }
+        return rowY(r) - old.rowY(r)
+    }
 }
 
 // MARK: - Weeks (Sunday first)
@@ -91,7 +128,7 @@ enum Week {
 // MARK: - App state
 
 enum Screen: String, CaseIterable, Identifiable {
-    case planner = "Planner", month = "Month", stats = "Stats"
+    case planner = "Planner", month = "Month", notes = "Notes", stats = "Stats"
     var id: String { rawValue }
 }
 
@@ -114,6 +151,10 @@ struct NativeBackup: Codable {
     var events: [PlannerEvent]
     var categories: [EventCategory]
     var ink: [String: String]     // week key -> base64 PencilKit drawing
+    var notes: String?            // the single Notes page of the first version (base64), read only
+    var noteList: [NoteInfo]?     // the Notes tab's notes
+    var noteInk: [String: String]? // note id -> base64 PencilKit drawing
+    var dayLines: [String: Int]?  // day key -> lines added with the + button
 }
 
 /// The web app's backup file (only its events + categories can be brought over).
@@ -152,6 +193,28 @@ final class PlannerModel: ObservableObject {
     @Published var categories: [EventCategory] = EventCategory.defaults {
         didSet { if !loading { Storage.shared.writeJSON(categories, "categories.json") } }
     }
+    /// Lines added to a day with its + button (day key -> extra lines).
+    @Published var extraLines: [String: Int] = [:] {
+        didSet { if !loading { Storage.shared.writeJSON(extraLines, DayLines.fileName) } }
+    }
+    @Published var showFederalHolidays: Bool {
+        didSet { UserDefaults.standard.set(showFederalHolidays, forKey: "holidaysFederal") }
+    }
+    @Published var showObservances: Bool {
+        didSet { UserDefaults.standard.set(showObservances, forKey: "holidaysObservances") }
+    }
+    /// The Notes tab's notes, newest first.
+    @Published var notes: [NoteInfo] = [] {
+        didSet { if !loading { Storage.shared.writeJSON(notes, NotesStore.indexName) } }
+    }
+    /// The note open in the Notes tab.
+    @Published var currentNoteID: String? = nil {
+        didSet { UserDefaults.standard.set(currentNoteID, forKey: "currentNote") }
+    }
+    /// Goes up whenever everything was re-read from storage (so the Notes page reloads too).
+    @Published private(set) var storageGeneration = 0
+    /// A message shown in an alert over the planner.
+    @Published var notice: String?
 
     let commands = PassthroughSubject<BookCommand, Never>()
     weak var undoManager: UndoManager?
@@ -159,6 +222,9 @@ final class PlannerModel: ObservableObject {
 
     init() {
         themeID = UserDefaults.standard.string(forKey: "theme") ?? "classic"
+        showFederalHolidays = UserDefaults.standard.object(forKey: "holidaysFederal") as? Bool ?? true
+        showObservances = UserDefaults.standard.object(forKey: "holidaysObservances") as? Bool ?? true
+        currentNoteID = UserDefaults.standard.string(forKey: "currentNote")
         reloadFromStorage()
     }
 
@@ -172,8 +238,95 @@ final class PlannerModel: ObservableObject {
         categories = Storage.shared.readJSON([EventCategory].self, "categories.json") ?? EventCategory.defaults
         if categories.isEmpty { categories = EventCategory.defaults }
         if !categories.contains(where: { $0.id == currentCat }) { currentCat = categories[0].id }
+        extraLines = Storage.shared.readJSON([String: Int].self, DayLines.fileName) ?? [:]
+        notes = NotesStore.loadIndex()
+        if !notes.contains(where: { $0.id == currentNoteID }) { currentNoteID = notes.first?.id }
         storageName = Storage.shared.displayName
         loading = false
+        storageGeneration += 1
+    }
+
+    // MARK: notes
+
+    func newNote() {
+        let note = NoteInfo(title: "Untitled note")
+        notes.insert(note, at: 0)
+        currentNoteID = note.id
+    }
+
+    func renameNote(_ id: String, to title: String) {
+        guard let i = notes.firstIndex(where: { $0.id == id }) else { return }
+        notes[i].title = title
+    }
+
+    /// Deletes a note and its handwriting for good, and opens the next one.
+    func deleteNote(_ id: String) {
+        guard let i = notes.firstIndex(where: { $0.id == id }) else { return }
+        notes.remove(at: i)
+        NotesStore.remove(id)
+        if currentNoteID == id { currentNoteID = notes.isEmpty ? nil : notes[min(i, notes.count - 1)].id }
+    }
+
+    func hasNote(_ id: String) -> Bool { notes.contains { $0.id == id } }
+
+    /// A note's handwriting was saved: update its "edited" time.
+    func noteSaved(_ id: String) {
+        guard let i = notes.firstIndex(where: { $0.id == id }) else { return }
+        notes[i].modified = Date()
+    }
+
+    // MARK: holidays
+
+    func holidays(on day: Date) -> [Holiday] {
+        Holidays.on(day).filter { $0.federal ? showFederalHolidays : showObservances }
+    }
+
+    // MARK: day lines (the + / − buttons on each day)
+
+    func layout(for week: Date) -> WeekLayout {
+        WeekLayout(lines: (0..<7).map { lines(on: Week.day($0, of: week)) })
+    }
+
+    func lines(on day: Date) -> Int { Page.lines + (extraLines[Week.key(day)] ?? 0) }
+
+    func addLine(_ day: Date) {
+        let extra = extraLines[Week.key(day)] ?? 0
+        guard extra < Page.maxExtraLines else { return }
+        setExtraLines(day, extra + 1)
+    }
+
+    /// Takes away the last added line, as long as nothing is written on it.
+    func removeLine(_ day: Date) {
+        let extra = extraLines[Week.key(day)] ?? 0
+        guard extra > 0 else { return }
+        NotificationCenter.default.post(name: .plannerSaveAll, object: nil)
+        let week = Week.start(of: day)
+        let lay = layout(for: week)
+        let row = Week.days(from: week, to: day)
+        let lastLine = CGRect(x: 0, y: lay.rowY(row + 1) - Page.lineH, width: Page.width, height: Page.lineH)
+        let used = InkStore.shared.load(week).strokes.contains {
+            lastLine.contains(CGPoint(x: $0.renderBounds.midX, y: $0.renderBounds.midY))
+        }
+        if used {
+            notice = "There's writing on the last line of that day. Erase it first, then tap − again."
+            return
+        }
+        setExtraLines(day, extra - 1)
+    }
+
+    /// Changes a day's line count and moves the week's handwriting so it stays on its day (undoable).
+    private func setExtraLines(_ day: Date, _ n: Int) {
+        NotificationCenter.default.post(name: .plannerSaveAll, object: nil)
+        let week = Week.start(of: day)
+        let key = Week.key(day)
+        let before = extraLines[key] ?? 0
+        let old = layout(for: week)
+        var map = extraLines
+        if n > 0 { map[key] = n } else { map.removeValue(forKey: key) }
+        extraLines = map
+        InkStore.shared.relayout(week: week, from: old, to: layout(for: week))
+        NotificationCenter.default.post(name: .plannerInkChangedElsewhere, object: Week.key(week))
+        undoManager?.registerUndo(withTarget: self) { m in m.setExtraLines(day, before) }
     }
 
     // MARK: categories
@@ -197,7 +350,7 @@ final class PlannerModel: ObservableObject {
     /// New event on a day, placed on the first writing line not already used by another event.
     func beginNew(date: Date) {
         let taken = expandEvents(events, from: date, to: date).flatMap { Array($0.line..<($0.line + $0.lines)) }
-        let line = (0..<Page.lines).first { !taken.contains($0) } ?? 0
+        let line = (0..<lines(on: date)).first { !taken.contains($0) } ?? 0
         beginNew(date: date, line: line)
     }
 
@@ -229,7 +382,7 @@ final class PlannerModel: ObservableObject {
     func upsert(_ e: PlannerEvent) {
         var e = e
         e.lines = min(max(e.lines, 1), Page.lines)
-        e.line = min(max(e.line, 0), Page.lines - e.lines)
+        e.line = min(max(e.line, 0), max(lines(on: e.start) - e.lines, 0))
         e.days = min(max(e.days, 1), 60)
         let before = events.first { $0.id == e.id }
         replace(e.id, with: e)
@@ -279,7 +432,12 @@ final class PlannerModel: ObservableObject {
         for key in Storage.shared.inkWeekKeys() {
             if let d = Storage.shared.read("ink-\(key).drawing") { ink[key] = d.base64EncodedString() }
         }
-        let b = NativeBackup(theme: themeID, events: events, categories: categories, ink: ink)
+        var noteInk: [String: String] = [:]
+        for n in notes {
+            if let d = Storage.shared.read(NotesStore.fileName(n.id)) { noteInk[n.id] = d.base64EncodedString() }
+        }
+        let b = NativeBackup(theme: themeID, events: events, categories: categories, ink: ink,
+                             noteList: notes, noteInk: noteInk, dayLines: extraLines)
         return (try? JSONEncoder().encode(b)) ?? Data()
     }
 
@@ -288,11 +446,25 @@ final class PlannerModel: ObservableObject {
             for (k, v) in b.ink {
                 if let d = Data(base64Encoded: v) { Storage.shared.write(d, "ink-\(k).drawing") }
             }
+            // notes in the backup are added (same note: the backup's copy wins); other notes stay
+            var incoming = b.noteList ?? []
+            for (id, v) in b.noteInk ?? [:] {
+                if let d = Data(base64Encoded: v) { Storage.shared.write(d, NotesStore.fileName(id)) }
+            }
+            if let n = b.notes, let d = Data(base64Encoded: n) {        // backup from the first version
+                let note = NoteInfo(title: "Notes (from backup)")
+                Storage.shared.write(d, NotesStore.fileName(note.id))
+                incoming.append(note)
+            }
+            notes = incoming + notes.filter { e in !incoming.contains(where: { $0.id == e.id }) }
+            if currentNoteID == nil { currentNoteID = notes.first?.id }
             categories = b.categories.isEmpty ? EventCategory.defaults : b.categories
             events = b.events
+            if let l = b.dayLines { extraLines = l }
             themeID = b.theme
+            storageGeneration += 1
             commands.send(.reload)
-            return "Backup restored: \(b.ink.count) week(s) of handwriting and \(b.events.count) event(s)."
+            return "Backup restored: \(b.ink.count) week(s) of handwriting, your notes and \(b.events.count) event(s)."
         }
         if let w = try? JSONDecoder().decode(WebBackup.self, from: data), w.format == "weekly-planner" {
             if let cats = w.entries.categories, !cats.isEmpty {
