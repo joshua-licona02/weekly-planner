@@ -117,7 +117,8 @@ final class Storage {
                 n = String(n.dropFirst().dropLast(".icloud".count))
             }
             let ours = (n.hasPrefix("ink-") && n.hasSuffix(".drawing")) || n == "events.json" || n == "categories.json"
-                || n == NotesStore.fileName || n == DayLines.fileName
+                || (n.hasPrefix("note-") && n.hasSuffix(".drawing")) || n == NotesStore.indexName
+                || n == NotesStore.legacyName || n == DayLines.fileName
             return ours ? n : nil
         }
     }
@@ -173,21 +174,45 @@ enum DayLines {
     static let fileName = "day-lines.json"
 }
 
-/// The Notes page: one PencilKit drawing.
-enum NotesStore {
-    static let fileName = "notes.drawing"
+/// One note in the Notes tab (its handwriting is in "note-<id>.drawing").
+struct NoteInfo: Codable, Identifiable, Equatable {
+    var id: String = UUID().uuidString
+    var title: String
+    var created = Date()
+    var modified = Date()
+}
 
-    static func load() -> PKDrawing {
-        guard let data = Storage.shared.read(fileName),
+/// The Notes tab: a list of notes ("notes.json") and one PencilKit drawing per note.
+enum NotesStore {
+    static let indexName = "notes.json"
+    static let legacyName = "notes.drawing"     // the single Notes page from the first version
+
+    static func fileName(_ id: String) -> String { "note-\(id).drawing" }
+
+    static func load(_ id: String) -> PKDrawing {
+        guard let data = Storage.shared.read(fileName(id)),
               let drawing = try? PKDrawing(data: data) else { return PKDrawing() }
         return drawing
     }
 
-    static func save(_ drawing: PKDrawing) {
+    static func save(_ drawing: PKDrawing, id: String) {
         if drawing.strokes.isEmpty {
-            Storage.shared.remove(fileName)
+            Storage.shared.remove(fileName(id))
         } else {
-            Storage.shared.write(drawing.dataRepresentation(), fileName)
+            Storage.shared.write(drawing.dataRepresentation(), fileName(id))
         }
+    }
+
+    static func remove(_ id: String) { Storage.shared.remove(fileName(id)) }
+
+    /// The list of notes, newest first. The old single Notes page becomes the first note.
+    static func loadIndex() -> [NoteInfo] {
+        if let list = Storage.shared.readJSON([NoteInfo].self, indexName) { return list }
+        guard let legacy = Storage.shared.read(legacyName) else { return [] }
+        let note = NoteInfo(title: "Notes")
+        Storage.shared.write(legacy, fileName(note.id))
+        Storage.shared.writeJSON([note], indexName)
+        Storage.shared.remove(legacyName)
+        return [note]
     }
 }

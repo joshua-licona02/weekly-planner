@@ -3,11 +3,11 @@ import UIKit
 import PencilKit
 import Combine
 
-/// The Notes page: one long lined page (1000 wide, like the planner) that grows as you write.
+/// A note's page: one long lined page (1000 wide, like the planner) that grows as you write.
 /// The Pencil writes; a finger scrolls and pinches to zoom.
 enum NotesPage {
     static let width: CGFloat = 1000
-    static let firstLine: CGFloat = 140
+    static let firstLine: CGFloat = 60
     static let minHeight: CGFloat = 1400
     static let roomBelow: CGFloat = 600      // blank paper kept below your last writing
 
@@ -17,6 +17,195 @@ enum NotesPage {
         return max(minHeight, ceil(need / Page.lineH) * Page.lineH)
     }
 }
+
+// MARK: - Notes tab: list of notes + the open note
+
+struct NotesView: View {
+    @EnvironmentObject var model: PlannerModel
+    @AppStorage("notesShowList") private var showList = true
+    @State private var search = ""
+    @State private var deleting: NoteInfo?
+
+    var body: some View {
+        let t = model.theme
+        HStack(spacing: 0) {
+            if showList {
+                noteList
+                    .frame(width: 270)
+                    .transition(.move(edge: .leading))
+                Rectangle().fill(Color(t.border)).frame(width: 2)
+            }
+            if let note = model.notes.first(where: { $0.id == model.currentNoteID }) {
+                VStack(spacing: 0) {
+                    titleBar(note)
+                    Rectangle().fill(Color(t.border)).frame(height: 2)
+                    NotesCanvas(noteID: note.id)
+                }
+            } else {
+                emptyState
+            }
+        }
+        .foregroundStyle(Color(t.ink))
+        .background(Color(t.paper))
+        .overlay(Rectangle().stroke(Color(t.border), lineWidth: 2))
+        .confirmationDialog("Delete this note?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+                            titleVisibility: .visible, presenting: deleting) { note in
+            Button("Delete “\(note.title.isEmpty ? "Untitled note" : note.title)”", role: .destructive) {
+                withAnimation { model.deleteNote(note.id) }
+            }
+        } message: { _ in
+            Text("Its handwriting is deleted too. This can't be undone (unless you have a backup).")
+        }
+    }
+
+    private var filtered: [NoteInfo] {
+        let q = search.trimmingCharacters(in: .whitespaces)
+        return q.isEmpty ? model.notes : model.notes.filter { $0.title.localizedCaseInsensitiveContains(q) }
+    }
+
+    private var noteList: some View {
+        let t = model.theme
+        return VStack(spacing: 0) {
+            HStack {
+                Text("Notes").font(.title2.bold())
+                Spacer()
+                Button {
+                    withAnimation { model.newNote() }
+                } label: {
+                    Label("New note", systemImage: "square.and.pencil")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(t.accent))
+            }
+            .padding(12)
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").foregroundStyle(Color(t.muted))
+                TextField("Search titles", text: $search)
+                    .textFieldStyle(.plain)
+                    .autocorrectionDisabled()
+            }
+            .padding(8)
+            .background(Color(t.header), in: RoundedRectangle(cornerRadius: 9))
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
+
+            List {
+                ForEach(filtered) { note in
+                    noteRow(note)
+                        .listRowBackground(note.id == model.currentNoteID ? Color(t.header) : Color(t.paper))
+                        .swipeActions {
+                            Button(role: .destructive) { deleting = note } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
+                        .contextMenu {
+                            Button(role: .destructive) { deleting = note } label: {
+                                Label("Delete note", systemImage: "trash")
+                            }
+                        }
+                }
+                if filtered.isEmpty && !model.notes.isEmpty {
+                    Text("No titles match “\(search)”.")
+                        .font(.callout)
+                        .foregroundStyle(Color(t.muted))
+                        .listRowBackground(Color(t.paper))
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+        }
+        .background(Color(t.paper))
+    }
+
+    private func noteRow(_ note: NoteInfo) -> some View {
+        Button {
+            model.currentNoteID = note.id
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(note.title.isEmpty ? "Untitled note" : note.title)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text("Edited \(note.modified.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.caption)
+                    .foregroundStyle(Color(model.theme.muted))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Color(model.theme.ink))
+    }
+
+    private func titleBar(_ note: NoteInfo) -> some View {
+        let t = model.theme
+        return HStack(spacing: 12) {
+            Button {
+                withAnimation { showList.toggle() }
+            } label: {
+                Image(systemName: "sidebar.left").font(.title3)
+            }
+            .accessibilityLabel(showList ? "Hide the list of notes" : "Show the list of notes")
+            TextField("Title", text: Binding(get: { note.title }, set: { model.renameNote(note.id, to: $0) }))
+                .font(.title2.bold())
+                .textFieldStyle(.plain)
+            Text(note.created.formatted(date: .abbreviated, time: .omitted))
+                .font(.caption)
+                .foregroundStyle(Color(t.muted))
+            Button(role: .destructive) { deleting = note } label: {
+                Image(systemName: "trash").font(.title3)
+            }
+            .accessibilityLabel("Delete this note")
+        }
+        .tint(Color(t.accent))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color(t.header))
+    }
+
+    private var emptyState: some View {
+        let t = model.theme
+        return VStack(spacing: 14) {
+            if !showList {
+                HStack {
+                    Button { withAnimation { showList = true } } label: {
+                        Image(systemName: "sidebar.left").font(.title3)
+                    }
+                    Spacer()
+                }
+                .padding(14)
+            }
+            Spacer()
+            Image(systemName: "note.text").font(.system(size: 54)).foregroundStyle(Color(t.muted))
+            Text(model.notes.isEmpty ? "No notes yet" : "Pick a note from the list").font(.title3.bold())
+            Button {
+                withAnimation { model.newNote() }
+            } label: {
+                Label("New note", systemImage: "square.and.pencil").padding(.horizontal, 8)
+            }
+            .buttonStyle(.borderedProminent)
+            Spacer()
+        }
+        .tint(Color(t.accent))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// SwiftUI wrapper for one note's writing page.
+struct NotesCanvas: UIViewControllerRepresentable {
+    @EnvironmentObject var model: PlannerModel
+    let noteID: String
+
+    func makeUIViewController(context: Context) -> NotesController {
+        NotesController(model: model, noteID: noteID)
+    }
+
+    func updateUIViewController(_ controller: NotesController, context: Context) {
+        controller.show(noteID)
+    }
+}
+
+// MARK: - The writing page
 
 /// Draws just the part of the lined paper that's on screen (it can get very long),
 /// following the canvas' scroll position and zoom.
@@ -45,16 +234,6 @@ final class NotesPaperView: UIView {
         let top = offset.y / zoom
         let bottom = (offset.y + bounds.height) / zoom
 
-        if top < NotesPage.firstLine {
-            let attrs: [NSAttributedString.Key: Any] = [.font: t.font(44, bold: true), .foregroundColor: t.ink]
-            ("Notes" as NSString).draw(at: CGPoint(x: Page.gx, y: 22), withAttributes: attrs)
-            ctx.setStrokeColor(t.border.cgColor)
-            ctx.setLineWidth(2)
-            ctx.move(to: CGPoint(x: Page.gx, y: 96))
-            ctx.addLine(to: CGPoint(x: Page.right, y: 96))
-            ctx.strokePath()
-        }
-
         ctx.setStrokeColor(t.line.cgColor)
         ctx.setLineWidth(1.4)
         let first = max(0, floor((top - NotesPage.firstLine) / Page.lineH))
@@ -70,6 +249,7 @@ final class NotesPaperView: UIView {
 
 final class NotesController: UIViewController, PKCanvasViewDelegate {
     private let model: PlannerModel
+    private var noteID: String
     private let toolPicker = PKToolPicker()
     private let paper = NotesPaperView(frame: .zero)
     private let canvas = PKCanvasView()
@@ -79,8 +259,9 @@ final class NotesController: UIViewController, PKCanvasViewDelegate {
     private var saveWork: DispatchWorkItem?
     private var bag = Set<AnyCancellable>()
 
-    init(model: PlannerModel) {
+    init(model: PlannerModel, noteID: String) {
         self.model = model
+        self.noteID = noteID
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -100,7 +281,7 @@ final class NotesController: UIViewController, PKCanvasViewDelegate {
         canvas.backgroundColor = .clear
         canvas.isOpaque = false
         canvas.drawingPolicy = .pencilOnly            // Pencil writes; fingers scroll / zoom
-        canvas.drawing = NotesStore.load()            // load before the delegate is attached
+        canvas.drawing = NotesStore.load(noteID)      // load before the delegate is attached
         canvas.delegate = self
         canvas.contentInsetAdjustmentBehavior = .never
         canvas.alwaysBounceVertical = true
@@ -165,6 +346,18 @@ final class NotesController: UIViewController, PKCanvasViewDelegate {
         NotificationCenter.default.removeObserver(self)
     }
 
+    /// Switch to another note (saving this one first), starting at the top of its page.
+    func show(_ id: String) {
+        guard id != noteID else { return }
+        saveNow()
+        noteID = id
+        canvas.undoManager?.removeAllActions()     // undo shouldn't reach into the previous note
+        load()
+        canvas.setZoomScale(canvas.minimumZoomScale, animated: false)
+        canvas.contentOffset = .zero
+        syncPaper()
+    }
+
     private func applyTheme() {
         paper.theme = model.theme
         // In the dark theme PencilKit flips dark ink to light automatically, like Notes in dark mode.
@@ -178,8 +371,13 @@ final class NotesController: UIViewController, PKCanvasViewDelegate {
     }
 
     private func reload() {
+        guard model.hasNote(noteID) else { return }    // the list switches us to another note
+        load()
+    }
+
+    private func load() {
         saveWork?.cancel()
-        canvas.drawing = NotesStore.load()
+        canvas.drawing = NotesStore.load(noteID)
         saveWork?.cancel()
         dirty = false
         height = NotesPage.height(for: canvas.drawing)
@@ -209,6 +407,11 @@ final class NotesController: UIViewController, PKCanvasViewDelegate {
 
     // MARK: saving (and growing the page as you write near the bottom)
 
+    /// Writing after typing a title: bring Apple's tool palette back.
+    func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
+        if !canvas.isFirstResponder { updateTools() }
+    }
+
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
         dirty = true
         let need = NotesPage.height(for: canvasView.drawing)
@@ -227,17 +430,10 @@ final class NotesController: UIViewController, PKCanvasViewDelegate {
         saveWork = nil
         guard dirty else { return }
         dirty = false
-        NotesStore.save(canvas.drawing)
+        guard model.hasNote(noteID) else { return }      // deleted: don't write it back
+        NotesStore.save(canvas.drawing, id: noteID)
+        // (can run while SwiftUI is switching notes, so update the list just after)
+        let id = noteID, m = model
+        DispatchQueue.main.async { m.noteSaved(id) }
     }
-}
-
-/// SwiftUI wrapper.
-struct NotesView: UIViewControllerRepresentable {
-    @EnvironmentObject var model: PlannerModel
-
-    func makeUIViewController(context: Context) -> NotesController {
-        NotesController(model: model)
-    }
-
-    func updateUIViewController(_ controller: NotesController, context: Context) {}
 }

@@ -151,7 +151,9 @@ struct NativeBackup: Codable {
     var events: [PlannerEvent]
     var categories: [EventCategory]
     var ink: [String: String]     // week key -> base64 PencilKit drawing
-    var notes: String?            // base64 PencilKit drawing of the Notes page
+    var notes: String?            // the single Notes page of the first version (base64), read only
+    var noteList: [NoteInfo]?     // the Notes tab's notes
+    var noteInk: [String: String]? // note id -> base64 PencilKit drawing
     var dayLines: [String: Int]?  // day key -> lines added with the + button
 }
 
@@ -201,6 +203,14 @@ final class PlannerModel: ObservableObject {
     @Published var showObservances: Bool {
         didSet { UserDefaults.standard.set(showObservances, forKey: "holidaysObservances") }
     }
+    /// The Notes tab's notes, newest first.
+    @Published var notes: [NoteInfo] = [] {
+        didSet { if !loading { Storage.shared.writeJSON(notes, NotesStore.indexName) } }
+    }
+    /// The note open in the Notes tab.
+    @Published var currentNoteID: String? = nil {
+        didSet { UserDefaults.standard.set(currentNoteID, forKey: "currentNote") }
+    }
     /// Goes up whenever everything was re-read from storage (so the Notes page reloads too).
     @Published private(set) var storageGeneration = 0
     /// A message shown in an alert over the planner.
@@ -214,6 +224,7 @@ final class PlannerModel: ObservableObject {
         themeID = UserDefaults.standard.string(forKey: "theme") ?? "classic"
         showFederalHolidays = UserDefaults.standard.object(forKey: "holidaysFederal") as? Bool ?? true
         showObservances = UserDefaults.standard.object(forKey: "holidaysObservances") as? Bool ?? true
+        currentNoteID = UserDefaults.standard.string(forKey: "currentNote")
         reloadFromStorage()
     }
 
@@ -228,9 +239,40 @@ final class PlannerModel: ObservableObject {
         if categories.isEmpty { categories = EventCategory.defaults }
         if !categories.contains(where: { $0.id == currentCat }) { currentCat = categories[0].id }
         extraLines = Storage.shared.readJSON([String: Int].self, DayLines.fileName) ?? [:]
+        notes = NotesStore.loadIndex()
+        if !notes.contains(where: { $0.id == currentNoteID }) { currentNoteID = notes.first?.id }
         storageName = Storage.shared.displayName
         loading = false
         storageGeneration += 1
+    }
+
+    // MARK: notes
+
+    func newNote() {
+        let note = NoteInfo(title: "Untitled note")
+        notes.insert(note, at: 0)
+        currentNoteID = note.id
+    }
+
+    func renameNote(_ id: String, to title: String) {
+        guard let i = notes.firstIndex(where: { $0.id == id }) else { return }
+        notes[i].title = title
+    }
+
+    /// Deletes a note and its handwriting for good, and opens the next one.
+    func deleteNote(_ id: String) {
+        guard let i = notes.firstIndex(where: { $0.id == id }) else { return }
+        notes.remove(at: i)
+        NotesStore.remove(id)
+        if currentNoteID == id { currentNoteID = notes.isEmpty ? nil : notes[min(i, notes.count - 1)].id }
+    }
+
+    func hasNote(_ id: String) -> Bool { notes.contains { $0.id == id } }
+
+    /// A note's handwriting was saved: update its "edited" time.
+    func noteSaved(_ id: String) {
+        guard let i = notes.firstIndex(where: { $0.id == id }) else { return }
+        notes[i].modified = Date()
     }
 
     // MARK: holidays
@@ -390,9 +432,12 @@ final class PlannerModel: ObservableObject {
         for key in Storage.shared.inkWeekKeys() {
             if let d = Storage.shared.read("ink-\(key).drawing") { ink[key] = d.base64EncodedString() }
         }
-        let notes = Storage.shared.read(NotesStore.fileName)?.base64EncodedString()
+        var noteInk: [String: String] = [:]
+        for n in notes {
+            if let d = Storage.shared.read(NotesStore.fileName(n.id)) { noteInk[n.id] = d.base64EncodedString() }
+        }
         let b = NativeBackup(theme: themeID, events: events, categories: categories, ink: ink,
-                             notes: notes, dayLines: extraLines)
+                             noteList: notes, noteInk: noteInk, dayLines: extraLines)
         return (try? JSONEncoder().encode(b)) ?? Data()
     }
 
@@ -401,7 +446,18 @@ final class PlannerModel: ObservableObject {
             for (k, v) in b.ink {
                 if let d = Data(base64Encoded: v) { Storage.shared.write(d, "ink-\(k).drawing") }
             }
-            if let n = b.notes, let d = Data(base64Encoded: n) { Storage.shared.write(d, NotesStore.fileName) }
+            // notes in the backup are added (same note: the backup's copy wins); other notes stay
+            var incoming = b.noteList ?? []
+            for (id, v) in b.noteInk ?? [:] {
+                if let d = Data(base64Encoded: v) { Storage.shared.write(d, NotesStore.fileName(id)) }
+            }
+            if let n = b.notes, let d = Data(base64Encoded: n) {        // backup from the first version
+                let note = NoteInfo(title: "Notes (from backup)")
+                Storage.shared.write(d, NotesStore.fileName(note.id))
+                incoming.append(note)
+            }
+            notes = incoming + notes.filter { e in !incoming.contains(where: { $0.id == e.id }) }
+            if currentNoteID == nil { currentNoteID = notes.first?.id }
             categories = b.categories.isEmpty ? EventCategory.defaults : b.categories
             events = b.events
             if let l = b.dayLines { extraLines = l }
